@@ -2,5 +2,6 @@ namespace ShopifyOrderAutomation.Services;
 
 public interface IShopifyService
 {
-    Task MarkOrderAsFulfilled(long orderId, string trackingNumber);
+    Task MarkOrderAsOnHold(string orderName);
+    Task MarkOrderAsFulfilled(string orderName, string trackingNumber);
 }

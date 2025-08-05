@@ -1,4 +1,4 @@
-namespace ShopifyOrderAutomation.Services;
+namespace ShopifyOrderAutomation.Models;
 
 public class ShopifyFulfillmentWebhook
 {

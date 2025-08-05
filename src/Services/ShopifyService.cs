@@ -7,102 +7,72 @@ public class ShopifyService : IShopifyService
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _config;
+    private readonly string _shopName;
 
     public ShopifyService(HttpClient httpClient, IConfiguration config)
     {
         _httpClient = httpClient;
         _config = config;
+        _shopName = _config["Shopify:ShopName"];
     }
 
-    public async Task MarkOrderAsFulfilled(long orderId, string trackingNumber)
+    public async Task MarkOrderAsOnHold(string orderName)
     {
-        string shopUrl = _config["Shopify:BaseUrl"];
-        string accessToken = _config["Shopify:Token"];
+        var orderId = await GetOrderIdByName(orderName);
+        if (orderId == null) return;
 
-        var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://{shopUrl}/admin/api/2023-04/orders/{orderId}/fulfillments.json"
-        );
+        var request = new HttpRequestMessage(HttpMethod.Put,
+            $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders/{orderId}.json")
+        {
+            Content = JsonContent.Create(new
+            {
+                order = new { id = orderId, tags = "OnHold" }
+            })
+        };
+        AddAuthHeaders(request);
+        await _httpClient.SendAsync(request);
+    }
 
-        request.Headers.Add("X-Shopify-Access-Token", accessToken);
+    public async Task MarkOrderAsFulfilled(string orderName, string trackingNumber)
+    {
+        var orderId = await GetOrderIdByName(orderName);
+        if (orderId == null) return;
 
-        var body = new
+        var fulfillment = new
         {
             fulfillment = new
             {
-                notify_customer = true,
                 tracking_number = trackingNumber,
                 tracking_company = "InPost",
+                notify_customer = true
             }
         };
 
-        string json = JsonSerializer.Serialize(body);
-        request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-        var response = await _httpClient.SendAsync(request);
-        response.EnsureSuccessStatusCode(); 
-    }
-    
-    public async Task HoldFulfillmentAsync(long orderId)
-{
-    string shopUrl = _config["Shopify:BaseUrl"];
-    string accessToken = _config["Shopify:Token"];
-
-    var request = new HttpRequestMessage(
-        HttpMethod.Post,
-        $"https://{shopUrl}/admin/api/2023-04/orders/{orderId}/fulfillment_orders.json"
-    );
-    request.Headers.Add("X-Shopify-Access-Token", accessToken);
-    var response = await _httpClient.SendAsync(request);
-    var content = await response.Content.ReadAsStringAsync();
-    var root = JsonDocument.Parse(content).RootElement;
-
-    foreach (var fulfillmentOrder in root.GetProperty("fulfillment_orders").EnumerateArray())
-    {
-        var fulfillmentOrderId = fulfillmentOrder.GetProperty("id").GetInt64();
-        var holdRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://{shopUrl}/admin/api/2023-04/fulfillment_orders/{fulfillmentOrderId}/hold.json"
-        );
-
-        var body = new
+        var request = new HttpRequestMessage(HttpMethod.Post,
+            $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders/{orderId}/fulfillments.json")
         {
-            reason = "awaiting_stock",
-            reason_notes = "Wstrzymane do momentu potwierdzenia odbioru przez InPost"
+            Content = JsonContent.Create(fulfillment)
         };
-
-        holdRequest.Headers.Add("X-Shopify-Access-Token", accessToken);
-        holdRequest.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
-
-        await _httpClient.SendAsync(holdRequest);
+        AddAuthHeaders(request);
+        await _httpClient.SendAsync(request);
     }
-}
 
-public async Task ReleaseFulfillmentHoldAsync(long orderId)
-{
-    string shopUrl = _config["Shopify:BaseUrl"];
-    string accessToken = _config["Shopify:Token"];
-
-    var request = new HttpRequestMessage(
-        HttpMethod.Post,
-        $"https://{shopUrl}/admin/api/2023-04/orders/{orderId}/fulfillment_orders.json"
-    );
-    request.Headers.Add("X-Shopify-Access-Token", accessToken);
-    var response = await _httpClient.SendAsync(request);
-    var content = await response.Content.ReadAsStringAsync();
-    var root = JsonDocument.Parse(content).RootElement;
-
-    foreach (var fulfillmentOrder in root.GetProperty("fulfillment_orders").EnumerateArray())
+    private async Task<string> GetOrderIdByName(string orderName)
     {
-        var fulfillmentOrderId = fulfillmentOrder.GetProperty("id").GetInt64();
-        var releaseRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://{shopUrl}/admin/api/2023-04/fulfillment_orders/{fulfillmentOrderId}/release_hold.json"
-        );
+        var request = new HttpRequestMessage(HttpMethod.Get,
+            $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders.json?name={orderName}");
+        AddAuthHeaders(request);
+        var response = await _httpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode) return null;
 
-        releaseRequest.Headers.Add("X-Shopify-Access-Token", accessToken);
-        await _httpClient.SendAsync(releaseRequest);
+        var content = await response.Content.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(content);
+        var order = json.RootElement.GetProperty("orders").EnumerateArray().FirstOrDefault();
+        return order.TryGetProperty("id", out var id) ? id.ToString() : null;
     }
-}
 
+    private void AddAuthHeaders(HttpRequestMessage request)
+    {
+        request.Headers.Add("X-Shopify-Access-Token", _config["Shopify:AccessToken"]);
+    }
 }
