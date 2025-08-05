@@ -1,4 +1,5 @@
 using ShopifyOrderAutomation.Configuration;
+using ShopifyOrderAutomation.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
