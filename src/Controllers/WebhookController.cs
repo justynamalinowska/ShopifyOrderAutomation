@@ -22,12 +22,16 @@ public class WebhookController : ControllerBase
     [HttpPost("fulfillment-created")]
     public async Task<IActionResult> FulfillmentCreated([FromBody] ShopifyFulfillmentWebhook payload)
     {
-        var shipmentName = payload.OrderName; 
+        var shipmentName = payload.OrderName;
+        var (isReady, trackingNumber, status) = await _inPostService.GetFulfillmentStatus(shipmentName);
 
-        var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(shipmentName);
-
-        if (isReady)
+        if (status == "created")
         {
+            await _shopifyService.HoldFulfillmentAsync(payload.OrderId);
+        }
+        else if (isReady)
+        {
+            await _shopifyService.ReleaseFulfillmentHoldAsync(payload.OrderId);
             await _shopifyService.MarkOrderAsFulfilled(payload.OrderId, trackingNumber);
         }
 

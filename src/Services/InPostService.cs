@@ -14,19 +14,19 @@ public class InPostService : IInPostService
         _config = config;
     }
 
-public async Task<(bool isReady, string trackingNumber)> IsReadyForFulfillment(string shipmentName)
+public async Task<(bool isReady, string trackingNumber, string status)> GetFulfillmentStatus(string referenceNumber)
 {
-    string token = _config["InPost:Token"]; 
+    string token = _config["InPost:Token"];
 
     var request = new HttpRequestMessage(
         HttpMethod.Get,
-        $"https://api-shipx-pl.easypack24.net/v1/tracking?name={shipmentName}"
+        $"https://api-shipx-pl.easypack24.net/v1/tracking?ref={referenceNumber}"
     );
 
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
     var response = await _httpClient.SendAsync(request);
 
-    if (!response.IsSuccessStatusCode) return (false, null);
+    if (!response.IsSuccessStatusCode) return (false, null, null);
 
     var content = await response.Content.ReadAsStringAsync();
     using var doc = JsonDocument.Parse(content);
@@ -36,6 +36,7 @@ public async Task<(bool isReady, string trackingNumber)> IsReadyForFulfillment(s
     string trackingNumber = root.GetProperty("tracking_number").GetString();
 
     bool isReady = status == "adopted_at_sorting_center";
-    return (isReady, trackingNumber);
+    return (isReady, trackingNumber, status);
 }
+
 }
