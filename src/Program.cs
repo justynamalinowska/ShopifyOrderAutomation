@@ -6,24 +6,25 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddLogging();
 
-builder.Services.Configure<InPostConfiguration>(builder.Configuration.GetSection("InPostConfiguration"));
-builder.Services.Configure<ShopifyConfiguration>(builder.Configuration.GetSection("ShopifyConfiguration"));
+builder.Services.Configure<InPostConfiguration>(builder.Configuration.GetSection("InPost"));
+builder.Services.Configure<ShopifyConfiguration>(builder.Configuration.GetSection("Shopify"));
 
 builder.Services.AddHttpClient<IInPostService, InPostService>();
 builder.Services.AddHttpClient<IShopifyService, ShopifyService>();
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
 
 app.UseHttpsRedirection();
+
 app.MapControllers();
+
 app.Run();
