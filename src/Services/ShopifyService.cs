@@ -43,8 +43,11 @@ public class ShopifyService : IShopifyService
         {
             Content = JsonContent.Create(new
             {
-                reason = "other",
-                reason_notes = "Wstrzymano realizację przez API"
+                fulfillment_order_hold = new
+                {
+                    reason = "other",
+                    reason_notes = "Paczka czeka na zeskanowanie w punkcie"
+                }
             })
         };
 
