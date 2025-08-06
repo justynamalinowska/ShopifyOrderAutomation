@@ -61,8 +61,10 @@ public class ShopifyService : IShopifyService
     {
         var cleanOrderName = orderName.Replace("#", "");
         Console.WriteLine("Szukam zamówienia o nazwie: " + cleanOrderName);
+
         var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders.json?name={cleanOrderName}");
+            $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders.json?name={cleanOrderName}&fulfillment_status=unfulfilled");
+
         AddAuthHeaders(request);
         var response = await _httpClient.SendAsync(request);
         if (!response.IsSuccessStatusCode) return null;
