@@ -37,8 +37,7 @@ public class ShopifyService : IShopifyService
         }
 
         Console.WriteLine($"[OnHold] Znaleziono fulfillmentOrderId: {fulfillmentOrderId}");
-
-        // 🧠 Poprawna serializacja JSON z ręcznym ustawieniem Content-Type
+        
         var payload = new
         {
             fulfillment_hold = new  
