@@ -150,16 +150,30 @@ public class ShopifyService : IShopifyService
         var response = await _httpClient.SendAsync(request);
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[GetFulfillmentId] Błąd API: {(int)response.StatusCode} {response.ReasonPhrase} {response.Content} {response.Headers}");
+            Console.WriteLine($"[GetFulfillmentId] Błąd API: {(int)response.StatusCode} {response.ReasonPhrase}");
             return null;
         }
 
         var content = await response.Content.ReadAsStringAsync();
         using var json = JsonDocument.Parse(content);
 
-        var fulfillmentOrder = json.RootElement.GetProperty("fulfillment_orders").EnumerateArray().FirstOrDefault();
-        var found = fulfillmentOrder.TryGetProperty("id", out var id) ? id.ToString() : null;
+        var ordersArray = json.RootElement.GetProperty("fulfillment_orders").EnumerateArray();
 
+        var fulfillmentOrder = ordersArray.FirstOrDefault();
+
+        if (fulfillmentOrder.ValueKind == JsonValueKind.Undefined || fulfillmentOrder.ValueKind == JsonValueKind.Null)
+        {
+            Console.WriteLine("[GetFulfillmentId] fulfillment_orders[] puste – brak realizacji.");
+            return null;
+        }
+
+        if (!fulfillmentOrder.TryGetProperty("id", out var id))
+        {
+            Console.WriteLine("[GetFulfillmentId] Brak pola 'id' w fulfillment_order.");
+            return null;
+        }
+
+        var found = id.ToString();
         Console.WriteLine($"[GetFulfillmentId] fulfillmentOrderId={found}");
         return found;
     }
