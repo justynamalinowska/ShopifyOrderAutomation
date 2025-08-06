@@ -60,6 +60,7 @@ public class ShopifyService : IShopifyService
     private async Task<string> GetOrderIdByName(string orderName)
     {
         var cleanOrderName = orderName.Replace("#", "");
+        Console.WriteLine("Szukam zamówienia o nazwie: " + cleanOrderName);
         var request = new HttpRequestMessage(HttpMethod.Get,
             $"https://{_shopName}.myshopify.com/admin/api/2023-01/orders.json?name={cleanOrderName}");
         AddAuthHeaders(request);
