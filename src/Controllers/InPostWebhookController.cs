@@ -23,7 +23,7 @@ public class InPostWebhookController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> ReceiveWebhook([FromBody] InPostWebhookPayload payload)
     {
-        _logger.LogInformation("Webhook received: {@Payload}", payload);
+        _logger.LogInformation("Webhook received: {@Status} {@ShipmentName}", payload.Status, payload.ShipmentName);
         
         if (payload == null || string.IsNullOrEmpty(payload.ShipmentName))
             return BadRequest("Invalid payload");
