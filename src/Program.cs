@@ -4,6 +4,7 @@ using ShopifyOrderAutomation.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddLogging();
 
 builder.Services.Configure<InPostConfiguration>(builder.Configuration.GetSection("InPostConfiguration"));
 builder.Services.Configure<ShopifyConfiguration>(builder.Configuration.GetSection("ShopifyConfiguration"));
