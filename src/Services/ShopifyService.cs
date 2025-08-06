@@ -74,6 +74,6 @@ public class ShopifyService : IShopifyService
 
     private void AddAuthHeaders(HttpRequestMessage request)
     {
-        request.Headers.Add("X-Shopify-Access-Token", _config["Shopify:AccessToken"]);
+        request.Headers.Add("X-Shopify-Access-Token", _config["Shopify:Token"]);
     }
 }
