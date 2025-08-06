@@ -38,23 +38,32 @@ public class ShopifyService : IShopifyService
 
         Console.WriteLine($"[OnHold] Znaleziono fulfillmentOrderId: {fulfillmentOrderId}");
 
+        // 🧠 Poprawna serializacja JSON z ręcznym ustawieniem Content-Type
+        var payload = new
+        {
+            fulfillment_order_hold = new
+            {
+                reason = "other",
+                reason_notes = "Paczka czeka na zeskanowanie w punkcie"
+            }
+        };
+
+        var jsonString = JsonSerializer.Serialize(payload);
+        var content = new StringContent(jsonString);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
         var request = new HttpRequestMessage(HttpMethod.Post,
             $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillment_orders/{fulfillmentOrderId}/hold.json")
         {
-            Content = JsonContent.Create(new
-            {
-                fulfillment_order_hold = new
-                {
-                    reason = "other",
-                    reason_notes = "Paczka czeka na zeskanowanie w punkcie"
-                }
-            })
+            Content = content
         };
 
         AddAuthHeaders(request);
         var response = await _httpClient.SendAsync(request);
 
-        Console.WriteLine($"[OnHold] Odpowiedź z hold: {(int)response.StatusCode} {response.ReasonPhrase}");
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"[OnHold] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
+        Console.WriteLine($"[OnHold] Body: {responseBody}");
     }
 
     public async Task MarkOrderAsFulfilled(string orderName, string trackingNumber)
