@@ -41,12 +41,13 @@ public class ShopifyService : IShopifyService
         // 🧠 Poprawna serializacja JSON z ręcznym ustawieniem Content-Type
         var payload = new
         {
-            fulfillment_order_hold = new
+            fulfillment_hold = new  
             {
                 reason = "other",
                 reason_notes = "Paczka czeka na zeskanowanie w punkcie"
             }
         };
+
 
         var jsonString = JsonSerializer.Serialize(payload);
         var content = new StringContent(jsonString);
