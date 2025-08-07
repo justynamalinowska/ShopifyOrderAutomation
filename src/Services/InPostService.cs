@@ -19,7 +19,7 @@ public class InPostService : IInPostService
         string token = _config["InPost:Token"];
         var request = new HttpRequestMessage(
             HttpMethod.Get,
-            $"https://api-shipx-pl.easypack24.net/v1/tracking?tracking_number={trackingNumber}"
+            $"https://api-shipx-pl.easypack24.net/v1/tracking/{trackingNumber}"
         );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
