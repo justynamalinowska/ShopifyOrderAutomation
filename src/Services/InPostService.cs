@@ -14,12 +14,12 @@ public class InPostService : IInPostService
         _config = config;
     }
 
-    public async Task<(bool isReady, string trackingNumber)> IsReadyForFulfillment(string shipmentName)
+    public async Task<(bool isReady, string shipmentName)> IsReadyForFulfillment(string trackingNumber)
     {
         string token = _config["InPost:Token"];
         var request = new HttpRequestMessage(
             HttpMethod.Get,
-            $"https://api-shipx-pl.easypack24.net/v1/tracking?ref={shipmentName}"
+            $"https://api-shipx-pl.easypack24.net/v1/tracking?ref={trackingNumber}"
         );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
@@ -31,9 +31,9 @@ public class InPostService : IInPostService
         var root = doc.RootElement;
 
         string status = root.GetProperty("status").GetString();
-        string trackingNumber = root.GetProperty("tracking_number").GetString();
+        string shipmentName = root.GetProperty("tracking_number").GetString();
 
         bool isReady = status == "adopted_at_sorting_center";
-        return (isReady, trackingNumber);
+        return (isReady, shipmentName);
     }
 }

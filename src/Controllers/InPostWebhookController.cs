@@ -37,7 +37,7 @@ public class InPostWebhookController : ControllerBase
             case "adopted_at_sorting_center":
             {
                 _logger.LogInformation("Status 'adopted_at_sorting_center' received. Checking fulfillment readiness...");
-                var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(payload.ShipmentName);
+                var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(payload.TrackingNumber);
                 _logger.LogInformation("IsReady={IsReady}, TrackingNumber={TrackingNumber}", isReady, trackingNumber);
                 
                 if (isReady)
