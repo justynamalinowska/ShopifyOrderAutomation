@@ -10,5 +10,5 @@ public class InPostWebhookPayload
     public string ShipmentName { get; set; }
 
     [JsonPropertyName("tracking_number")]
-    public string TrackingNumber { get; set; }
+    public string? TrackingNumber { get; set; }
 }
