@@ -89,7 +89,7 @@ public class ShopifyService : IShopifyService
         Console.WriteLine($"[Fulfill] fulfillmentOrderId={fulfillmentOrderId}");
         
         await ReleaseFulfillmentHold(fulfillmentOrderId);
-        await Task.Delay(10000);
+        await Task.Delay(1000);
         
         var payload = new
         {
