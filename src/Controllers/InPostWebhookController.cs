@@ -30,7 +30,7 @@ public class InPostWebhookController : ControllerBase
 
         switch (payload.Status)
         {
-            case "created":
+            case "confirmed":
                 _logger.LogWarning("Status 'created' received. Marking order {ShipmentName} as on hold.", payload.ShipmentName);
                 await _shopifyService.MarkOrderAsOnHold(payload.ShipmentName);
                 break;
