@@ -39,7 +39,7 @@ public class InPostService : IInPostService
         string status = root.GetProperty("status").GetString();
         string shipmentName = root.GetProperty("tracking_number").GetString();
 
-        bool isReady = status == "adopted_at_sorting_center";
+        bool isReady = true; //status == "adopted_at_sorting_center";
         return (isReady, shipmentName);
     }
 }
