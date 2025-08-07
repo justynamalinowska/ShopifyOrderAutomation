@@ -79,48 +79,52 @@ public class ShopifyService : IShopifyService
 
         Console.WriteLine($"[Fulfill] Znaleziono orderId: {orderId}");
 
-        var orderDetails = await GetOrderDetails(orderId);
-        if (orderDetails == null)
+        var fulfillmentOrderId = await GetFulfillmentOrderId(orderId);
+        if (fulfillmentOrderId == null)
         {
-            Console.WriteLine("[Fulfill] Nie udało się pobrać szczegółów zamówienia.");
+            Console.WriteLine("[Fulfill] fulfillment_order_id == null");
             return;
         }
-
-        var order = orderDetails.RootElement.GetProperty("order");
-
-        var locationId = order.GetProperty("location_id").GetInt64();
-        Console.WriteLine($"[Fulfill] locationId: {locationId}");
-
-        var lineItems = order
-            .GetProperty("line_items")
-            .EnumerateArray()
-            .Select(item => new { id = item.GetProperty("id").GetInt64() })
-            .ToArray();
-
-        Console.WriteLine($"[Fulfill] Liczba pozycji w zamówieniu: {lineItems.Length}");
-
-        var fulfillment = new
+        
+        Console.WriteLine($"[Fulfill] fulfillmentOrderId={fulfillmentOrderId}");
+        
+        await ReleaseFulfillmentHold(fulfillmentOrderId);
+        await Task.Delay(1000);
+        
+        var payload = new
         {
             fulfillment = new
             {
-                location_id = locationId,
-                tracking_number = trackingNumber,
-                tracking_company = "InPost",
+                message = "Wysłano przez InPost",
                 notify_customer = true,
-                line_items = lineItems
+                tracking_info = new
+                {
+                    number = trackingNumber,
+                    company = "InPost"
+                },
+                line_items_by_fulfillment_order = new[]
+                {
+                    new
+                    {
+                        fulfillment_order_id = long.Parse(fulfillmentOrderId)
+                    }
+                }
             }
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/orders/{orderId}/fulfillments.json")
+            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillments.json")
         {
-            Content = JsonContent.Create(fulfillment)
+            Content = JsonContent.Create(payload)
         };
 
         AddAuthHeaders(request);
         var response = await _httpClient.SendAsync(request);
 
-        Console.WriteLine($"[Fulfill] Odpowiedź z fulfill: {(int)response.StatusCode} {response.ReasonPhrase}");
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Console.WriteLine($"[Fulfill] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
+        Console.WriteLine($"[Fulfill] Body: {responseBody}");
     }
 
     private async Task<string?> GetOrderIdByName(string orderName)
@@ -208,6 +212,21 @@ public class ShopifyService : IShopifyService
         var content = await response.Content.ReadAsStringAsync();
         Console.WriteLine($"[GetOrderDetails] Sukces.");
         return JsonDocument.Parse(content);
+    }
+    
+    public async Task ReleaseFulfillmentHold(string fulfillmentOrderId)
+    {
+        Console.WriteLine($"[ReleaseHold] Zdejmuję blokadę z fulfillment_order_id={fulfillmentOrderId}");
+
+        var request = new HttpRequestMessage(HttpMethod.Post,
+            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillment_orders/{fulfillmentOrderId}/release_hold.json");
+
+        AddAuthHeaders(request);
+        var response = await _httpClient.SendAsync(request);
+
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"[ReleaseHold] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
+        Console.WriteLine($"[ReleaseHold] Body: {responseBody}");
     }
 
     private void AddAuthHeaders(HttpRequestMessage request)
