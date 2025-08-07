@@ -85,7 +85,12 @@ public class ShopifyService : IShopifyService
             Console.WriteLine("[Fulfill] fulfillment_order_id == null");
             return;
         }
-
+        
+        Console.WriteLine($"[Fulfill] fulfillmentOrderId={fulfillmentOrderId}");
+        
+        await ReleaseFulfillmentHold(fulfillmentOrderId);
+        await Task.Delay(10000);
+        
         var payload = new
         {
             fulfillment = new
@@ -207,6 +212,21 @@ public class ShopifyService : IShopifyService
         var content = await response.Content.ReadAsStringAsync();
         Console.WriteLine($"[GetOrderDetails] Sukces.");
         return JsonDocument.Parse(content);
+    }
+    
+    public async Task ReleaseFulfillmentHold(string fulfillmentOrderId)
+    {
+        Console.WriteLine($"[ReleaseHold] Zdejmuję blokadę z fulfillment_order_id={fulfillmentOrderId}");
+
+        var request = new HttpRequestMessage(HttpMethod.Post,
+            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillment_orders/{fulfillmentOrderId}/release_hold.json");
+
+        AddAuthHeaders(request);
+        var response = await _httpClient.SendAsync(request);
+
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"[ReleaseHold] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
+        Console.WriteLine($"[ReleaseHold] Body: {responseBody}");
     }
 
     private void AddAuthHeaders(HttpRequestMessage request)
