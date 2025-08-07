@@ -23,11 +23,17 @@ public class InPostService : IInPostService
         );
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
+        Console.WriteLine($"[InPost] Wysyłam zapytanie do InPost: {request.RequestUri}");
+
         var response = await _httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Console.WriteLine($"[InPost] Status Code: {(int)response.StatusCode}");
+        Console.WriteLine($"[InPost] Response Body: {responseBody}");
+
         if (!response.IsSuccessStatusCode) return (false, null);
 
-        var content = await response.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(content);
+        using var doc = JsonDocument.Parse(responseBody);
         var root = doc.RootElement;
 
         string status = root.GetProperty("status").GetString();
