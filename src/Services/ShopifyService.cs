@@ -88,7 +88,7 @@ public class ShopifyService : IShopifyService
 
         var order = orderDetails.RootElement.GetProperty("order");
 
-        var locationId = order.GetProperty("location_id").GetInt64();
+        var locationId = long.Parse(_config["Shopify:DefaultLocationId"]);
         Console.WriteLine($"[Fulfill] locationId: {locationId}");
 
         var lineItems = order
