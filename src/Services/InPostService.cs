@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -6,14 +7,28 @@ namespace ShopifyOrderAutomation.Services;
 public class InPostService : IInPostService
 {
     private readonly HttpClient _httpClient;
-    private readonly IConfiguration _config;
+    private readonly string _token;
     private readonly ILogger<InPostService> _logger;
+    private readonly IConfiguration _config;
+
+    // produkcyjny ShipX
+    private const string BaseUrl = "https://api-shipx-pl.easypack24.net";
 
     public InPostService(HttpClient httpClient, IConfiguration config, ILogger<InPostService> logger)
     {
         _httpClient = httpClient;
-        _config = config;
         _logger = logger;
+        _config = config;
+
+        _token = _config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
+
+        // ustawiamy nagłówki od razu
+        _httpClient.BaseAddress = new Uri(BaseUrl);
+        _httpClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _token);
+        _httpClient.DefaultRequestHeaders.Accept.Clear();
+        _httpClient.DefaultRequestHeaders.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
     public async Task<(bool isReady, string shipmentName)> IsReadyForFulfillment(string trackingNumber)
@@ -47,23 +62,28 @@ public class InPostService : IInPostService
     
     public async Task<string?> ResolveOrderNameAsync(long shipmentId)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"https://api-shipx-pl.easypack24.net/v1/shipments/{shipmentId}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config["InPost:Token"]);
+        var resp = await _httpClient.GetAsync($"/v1/shipments/{shipmentId}");
 
-        var response = await _httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode)
+        if (resp.StatusCode == HttpStatusCode.Unauthorized || resp.StatusCode == HttpStatusCode.Forbidden)
         {
-            _logger.LogWarning("InPost API GET shipments/{id} zwróciło {Status}", response.StatusCode);
+            _logger.LogWarning($"InPost GET /v1/shipments/{shipmentId} -> {(int)resp.StatusCode} (AUTH problem)");
             return null;
         }
 
-        var json = await response.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(json);
+        if (!resp.IsSuccessStatusCode)
+        {
+            _logger.LogWarning($"InPost GET /v1/shipments/{shipmentId} -> {(int)resp.StatusCode}");
+            return null;
+        }
 
-        if (doc.RootElement.TryGetProperty("reference", out var refEl) && refEl.ValueKind == JsonValueKind.String)
+        var json = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("reference", out var refEl) && refEl.ValueKind == JsonValueKind.String)
             return refEl.GetString();
 
+        _logger.LogInformation($"Shipment {shipmentId} nie ma pola 'reference'.");
         return null;
     }
-
 }
