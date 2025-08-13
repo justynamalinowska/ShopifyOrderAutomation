@@ -62,7 +62,7 @@ public class InPostWebhookController : ControllerBase
 
             switch (ev)
             {
-                case "shipment_confirmed": // etykieta utworzona → ON HOLD
+                case "shipment_confirmed":
                     await HandleOnHoldAsync(shipmentId);
                     break;
 
