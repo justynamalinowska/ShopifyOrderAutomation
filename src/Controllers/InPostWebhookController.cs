@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc;
 using ShopifyOrderAutomation.Models;
 using ShopifyOrderAutomation.Services;
@@ -20,42 +22,90 @@ public class InPostWebhookController : ControllerBase
         _logger = logger;
     }
 
-    [HttpGet("")]
+    [HttpGet]
     public IActionResult HealthCheck()
     {
         return Ok("ok");
     }
     
     [HttpPost]
-    public async Task<IActionResult> ReceiveWebhook([FromBody] InPostWebhookPayload payload)
+    public async Task<IActionResult> ReceiveWebhook()
     {
-        _logger.LogInformation("Webhook received: {@Status} {@ShipmentName}", payload.Status, payload.ShipmentName);
-        
-        if (payload == null || string.IsNullOrEmpty(payload.ShipmentName))
-            return BadRequest("Invalid payload");
+        // 1) wczytanie surowego body (zadziała zawsze)
+        using var reader = new StreamReader(Request.Body);
+        var raw = await reader.ReadToEndAsync();
+        _logger.LogInformation("InPost webhook RAW: {Raw}", raw);
 
-        switch (payload.Status)
+        try
         {
-            case "created":
-                _logger.LogWarning("Status 'created' received. Marking order {ShipmentName} as on hold.", payload.ShipmentName);
-                await _shopifyService.MarkOrderAsOnHold(payload.ShipmentName);
-                break;
-            case "adopted_at_sorting_center":
+            var json = JsonNode.Parse(raw)!.AsObject();
+
+            // 2) PRZYPADek A: prawdziwy webhook InPost (owijka event + payload)
+            if (json.TryGetPropertyValue("event", out var evNode) &&
+                json.TryGetPropertyValue("payload", out var payloadNode))
             {
-                _logger.LogInformation("Status 'adopted_at_sorting_center' received. Checking fulfillment readiness...");
-                var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(payload.TrackingNumber);
-                _logger.LogInformation("IsReady={IsReady}, TrackingNumber={TrackingNumber}", isReady, trackingNumber);
-                
-                if (isReady)
+                var ev = evNode!.GetValue<string>();
+                var payload = payloadNode!.AsObject();
+
+                var status   = payload.TryGetPropertyValue("status", out var s) ? s!.GetValue<string>() : null;
+                var tracking = payload.TryGetPropertyValue("tracking_number", out var t) ? t!.GetValue<string>() : null;
+
+                _logger.LogInformation("InPost EVENT={Event} STATUS={Status} TRACKING={Tracking}",
+                    ev, status, tracking);
+
+                // Mapowanie minimalne – to, co już masz w logice:
+                if (ev == "shipment_confirmed")
                 {
-                    _logger.LogInformation("Marking order {ShipmentName} as fulfilled.", payload.ShipmentName);
-                    await _shopifyService.MarkOrderAsFulfilled(payload.ShipmentName, trackingNumber);
+                    // InPost tu NIE wysyła shipment_name — bez mapy tracking->zamówienie nie da się od razu wstrzymać.
+                    // Zostawiam informacyjny log, żeby było widać, że przyszło.
+                    _logger.LogInformation("shipment_confirmed odebrany (brak shipment_name w webhooku InPost).");
+                    // TODO (opcjonalnie później): znaleźć nazwę zamówienia po tracking i wywołać:
+                    // await _shopifyService.MarkOrderAsOnHold(orderName);
+                }
+                else if (ev == "shipment_status_changed" && status == "adopted_at_sorting_center")
+                {
+                    var (isReady, tn) = await _inPostService.IsReadyForFulfillment(tracking);
+                    if (isReady)
+                    {
+                        // jw. potrzebna nazwa zamówienia – do zrobienia gdy będziesz mieć mapowanie
+                        _logger.LogInformation("Gotowe do realizacji (tracking={Tracking}).", tn);
+                        // await _shopifyService.MarkOrderAsFulfilled(orderName, tn);
+                    }
                 }
 
-                break;
+                return Ok();
             }
-        }
 
-        return Ok();
+            // 3) PRZYPADek B: Twój testowy „płaski” JSON z curl (zostawiam, bo jest wygodny do testów)
+            var flat = JsonSerializer.Deserialize<FlatTestPayload>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (flat is null) return BadRequest("Invalid payload (unknown shape)");
+
+            _logger.LogInformation("Flat payload: {Status} {ShipmentName} {Tracking}",
+                flat.Status, flat.ShipmentName, flat.TrackingNumber);
+
+            switch (flat.Status)
+            {
+                case "created":
+                    if (!string.IsNullOrWhiteSpace(flat.ShipmentName))
+                        await _shopifyService.MarkOrderAsOnHold(flat.ShipmentName!);
+                    break;
+
+                case "adopted_at_sorting_center":
+                    var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(flat.TrackingNumber);
+                    if (isReady && !string.IsNullOrWhiteSpace(flat.ShipmentName))
+                        await _shopifyService.MarkOrderAsFulfilled(flat.ShipmentName!, trackingNumber);
+                    break;
+            }
+
+            return Ok();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process InPost webhook");
+            // 200, żeby InPost nie spamował ponownie — logi są.
+            return Ok();
+        }
     }
 }
+file record FlatTestPayload(string? Status, string? ShipmentName, string? TrackingNumber);
+
