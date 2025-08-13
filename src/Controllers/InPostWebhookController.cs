@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using ShopifyOrderAutomation.Models;
 using ShopifyOrderAutomation.Services;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Serialization;
 
 namespace ShopifyOrderAutomation.Controllers;
 
@@ -107,5 +108,10 @@ public class InPostWebhookController : ControllerBase
         }
     }
 }
-file record FlatTestPayload(string? Status, string? ShipmentName, string? TrackingNumber);
+record FlatTestPayload(
+    string? Status,
+    [property: JsonPropertyName("shipment_name")] string? ShipmentName,
+    [property: JsonPropertyName("tracking_number")] string? TrackingNumber
+);
+
 
