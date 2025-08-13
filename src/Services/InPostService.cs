@@ -66,23 +66,36 @@ public class InPostService : IInPostService
     
     public async Task<string?> ResolveOrderNameAsync(long shipmentId)
     {
-        _logger.LogInformation("[InPost] Pobieranie szczegółów shipment_id={ShipmentId}", shipmentId);
+        var cleanToken = _token.Trim();
 
-        var response = await _httpClient.GetAsync($"/v1/shipments/{shipmentId}");
-        _logger.LogInformation("[InPost] GET /v1/shipments/{ShipmentId} -> {StatusCode}", shipmentId, (int)response.StatusCode);
+        var url = $"{BaseUrl}/v1/shipments/{shipmentId}";
+        _logger.LogInformation("[InPost] Pobieranie szczegółów shipment_id={ShipmentId}", shipmentId);
+        _logger.LogInformation("[InPost] Request URL: {Url}", url);
+        _logger.LogInformation("[InPost] Token prefix: {Prefix}...", cleanToken.Substring(0, Math.Min(15, cleanToken.Length)));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cleanToken);
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.AcceptCharset.Add(new StringWithQualityHeaderValue("utf-8"));
+
+        var response = await _httpClient.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        _logger.LogInformation("[InPost] GET {Url} -> {StatusCode}", url, (int)response.StatusCode);
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("[InPost] Nie udało się pobrać shipmentu {ShipmentId}, kod={StatusCode}", shipmentId, (int)response.StatusCode);
+            _logger.LogWarning("[InPost] Błąd pobierania shipmentu {ShipmentId}: kod={StatusCode}, body={Body}", shipmentId, (int)response.StatusCode, body);
             return null;
         }
 
-        var json = await response.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(json);
+        using var doc = JsonDocument.Parse(body);
 
         if (doc.RootElement.TryGetProperty("reference", out var refProp))
         {
-            var orderName = refProp.GetString()?.TrimStart('#'); // usuwamy #
+            var orderName = refProp.GetString()?.TrimStart('#');
+            _logger.LogInformation("[InPost] Odczytany reference={Reference}", orderName);
             return orderName;
         }
 
