@@ -20,7 +20,7 @@ public class InPostWebhookController : ControllerBase
         _logger = logger;
     }
 
-    [HttpGet("api/inpost-webhook")]
+    [HttpGet("")]
     public IActionResult HealthCheck()
     {
         return Ok("ok");
