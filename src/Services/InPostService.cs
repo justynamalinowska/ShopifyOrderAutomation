@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -9,7 +8,6 @@ public class InPostService : IInPostService
     private readonly HttpClient _httpClient;
     private readonly string _token;
     private readonly ILogger<InPostService> _logger;
-    private readonly IConfiguration _config;
 
     // produkcyjny ShipX
     private const string BaseUrl = "https://api-shipx-pl.easypack24.net";
@@ -18,11 +16,10 @@ public class InPostService : IInPostService
     {
         _httpClient = httpClient;
         _logger = logger;
-        _config = config;
 
-        _token = _config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
+        _token = config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
 
-        // ustawiamy nagłówki od razu
+        // ustawiamy bazowy adres i nagłówki
         _httpClient.BaseAddress = new Uri(BaseUrl);
         _httpClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", _token);
@@ -33,44 +30,46 @@ public class InPostService : IInPostService
 
     public async Task<(bool isReady, string shipmentName)> IsReadyForFulfillment(string trackingNumber)
     {
-        string token = _config["InPost:Token"];
-        var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            $"https://api-shipx-pl.easypack24.net/v1/tracking/{trackingNumber}"
-        );
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        _logger.LogInformation("[InPost] Sprawdzanie statusu przesyłki {TrackingNumber}", trackingNumber);
 
-        Console.WriteLine($"[InPost] Wysyłam zapytanie do InPost: {request.RequestUri}");
-
-        var response = await _httpClient.SendAsync(request);
+        var response = await _httpClient.GetAsync($"/v1/tracking/{trackingNumber}");
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        Console.WriteLine($"[InPost] Status Code: {(int)response.StatusCode}");
-        Console.WriteLine($"[InPost] Response Body: {responseBody}");
+        _logger.LogInformation("[InPost] Status Code: {StatusCode}", (int)response.StatusCode);
+        _logger.LogDebug("[InPost] Response Body: {Body}", responseBody);
 
-        if (!response.IsSuccessStatusCode) return (false, null);
+        if (!response.IsSuccessStatusCode)
+            return (false, null);
 
         using var doc = JsonDocument.Parse(responseBody);
         var root = doc.RootElement;
 
-        string status = root.GetProperty("status").GetString();
-        string shipmentName = root.GetProperty("tracking_number").GetString();
+        if (!root.TryGetProperty("status", out var statusProp) ||
+            !root.TryGetProperty("tracking_number", out var trackingProp))
+        {
+            _logger.LogWarning("[InPost] Brak wymaganych pól w odpowiedzi API");
+            return (false, null);
+        }
 
-        bool isReady = true; //status == "adopted_at_sorting_center";
+        string status = statusProp.GetString();
+        string shipmentName = trackingProp.GetString();
+
+        bool isReady = true; // TEST: zawsze gotowe
+        // bool isReady = status == "adopted_at_sorting_center"; // PRODUKCJA: tylko po przyjęciu w sortowni
+
         return (isReady, shipmentName);
     }
     
     public async Task<string?> ResolveOrderNameAsync(long shipmentId)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/v1/shipments/{shipmentId}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+        _logger.LogInformation("[InPost] Pobieranie szczegółów shipment_id={ShipmentId}", shipmentId);
 
-        var response = await _httpClient.SendAsync(request);
-        _logger.LogInformation("InPost GET /v1/shipments/{ShipmentId} -> {StatusCode}", shipmentId, (int)response.StatusCode);
+        var response = await _httpClient.GetAsync($"/v1/shipments/{shipmentId}");
+        _logger.LogInformation("[InPost] GET /v1/shipments/{ShipmentId} -> {StatusCode}", shipmentId, (int)response.StatusCode);
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Nie udało się pobrać shipmentu {ShipmentId}, kod={StatusCode}", shipmentId, (int)response.StatusCode);
+            _logger.LogWarning("[InPost] Nie udało się pobrać shipmentu {ShipmentId}, kod={StatusCode}", shipmentId, (int)response.StatusCode);
             return null;
         }
 
@@ -79,10 +78,11 @@ public class InPostService : IInPostService
 
         if (doc.RootElement.TryGetProperty("reference", out var refProp))
         {
-            var orderName = refProp.GetString();
+            var orderName = refProp.GetString()?.TrimStart('#'); // usuwamy #
             return orderName;
         }
 
+        _logger.LogWarning("[InPost] Shipment {ShipmentId} nie zawiera pola 'reference'", shipmentId);
         return null;
     }
 }
