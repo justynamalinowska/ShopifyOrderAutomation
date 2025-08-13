@@ -57,11 +57,19 @@ public class InPostWebhookController : ControllerBase
                 // Mapowanie minimalne – to, co już masz w logice:
                 if (ev == "shipment_confirmed")
                 {
-                    // InPost tu NIE wysyła shipment_name — bez mapy tracking->zamówienie nie da się od razu wstrzymać.
-                    // Zostawiam informacyjny log, żeby było widać, że przyszło.
-                    _logger.LogInformation("shipment_confirmed odebrany (brak shipment_name w webhooku InPost).");
-                    // TODO (opcjonalnie później): znaleźć nazwę zamówienia po tracking i wywołać:
-                    // await _shopifyService.MarkOrderAsOnHold(orderName);
+                    var shipmentId = payload.TryGetPropertyValue("shipment_id", out var sh) ? sh!.GetValue<long>() : 0;
+                    var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
+
+                    _logger.LogInformation("shipment_confirmed -> orderName={Order}", orderName ?? "null");
+
+                    if (!string.IsNullOrWhiteSpace(orderName))
+                    {
+                        await _shopifyService.MarkOrderAsOnHold(orderName);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
+                    }
                 }
                 else if (ev == "shipment_status_changed" && status == "adopted_at_sorting_center")
                 {
