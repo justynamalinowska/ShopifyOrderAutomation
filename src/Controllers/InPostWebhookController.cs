@@ -1,10 +1,7 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc;
-using ShopifyOrderAutomation.Models;
 using ShopifyOrderAutomation.Services;
 using Microsoft.Extensions.Logging;
-using System.Text.Json.Serialization;
 
 namespace ShopifyOrderAutomation.Controllers;
 
@@ -24,15 +21,11 @@ public class InPostWebhookController : ControllerBase
     }
 
     [HttpGet]
-    public IActionResult HealthCheck()
-    {
-        return Ok("ok");
-    }
+    public IActionResult HealthCheck() => Ok("ok");
     
     [HttpPost]
     public async Task<IActionResult> ReceiveWebhook()
     {
-        // 1) wczytanie surowego body (zadziała zawsze)
         using var reader = new StreamReader(Request.Body);
         var raw = await reader.ReadToEndAsync();
         _logger.LogInformation("InPost webhook RAW: {Raw}", raw);
@@ -41,69 +34,54 @@ public class InPostWebhookController : ControllerBase
         {
             var json = JsonNode.Parse(raw)!.AsObject();
 
-            // 2) PRZYPADek A: prawdziwy webhook InPost (owijka event + payload)
-            if (json.TryGetPropertyValue("event", out var evNode) &&
-                json.TryGetPropertyValue("payload", out var payloadNode))
+            if (!json.TryGetPropertyValue("event", out var evNode) ||
+                !json.TryGetPropertyValue("payload", out var payloadNode))
             {
-                var ev = evNode!.GetValue<string>();
-                var payload = payloadNode!.AsObject();
+                _logger.LogWarning("Webhook bez wymaganych pól 'event' lub 'payload'");
+                return BadRequest();
+            }
 
-                var status   = payload.TryGetPropertyValue("status", out var s) ? s!.GetValue<string>() : null;
-                var tracking = payload.TryGetPropertyValue("tracking_number", out var t) ? t!.GetValue<string>() : null;
+            var ev = evNode!.GetValue<string>();
+            var payload = payloadNode!.AsObject();
 
-                _logger.LogInformation("InPost EVENT={Event} STATUS={Status} TRACKING={Tracking}",
-                    ev, status, tracking);
+            var status   = payload.TryGetPropertyValue("status", out var s) ? s!.GetValue<string>() : null;
+            var tracking = payload.TryGetPropertyValue("tracking_number", out var t) ? t!.GetValue<string>() : null;
 
-                // Mapowanie minimalne – to, co już masz w logice:
-                if (ev == "shipment_confirmed")
+            _logger.LogInformation("InPost EVENT={Event} STATUS={Status} TRACKING={Tracking}", ev, status, tracking);
+
+            if (ev == "shipment_confirmed") // Etykieta utworzona
+            {
+                var shipmentId = payload.TryGetPropertyValue("shipment_id", out var sh) ? sh!.GetValue<long>() : 0;
+                var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
+
+                if (!string.IsNullOrWhiteSpace(orderName))
                 {
-                    var shipmentId = payload.TryGetPropertyValue("shipment_id", out var sh) ? sh!.GetValue<long>() : 0;
-                    var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
-
-                    _logger.LogInformation("shipment_confirmed -> orderName={Order}", orderName ?? "null");
-
-                    if (!string.IsNullOrWhiteSpace(orderName))
-                    {
-                        await _shopifyService.MarkOrderAsOnHold(orderName);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
-                    }
+                    _logger.LogInformation("Marking order {OrderName} as ON HOLD.", orderName);
+                    await _shopifyService.MarkOrderAsOnHold(orderName);
                 }
-                else if (ev == "shipment_status_changed" && status == "adopted_at_sorting_center")
+                else
+                {
+                    _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
+                }
+            }
+            else if (ev == "shipment_status_changed" && status == "adopted_at_sorting_center")
+            {
+                var shipmentId = payload.TryGetPropertyValue("shipment_id", out var sh) ? sh!.GetValue<long>() : 0;
+                var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
+
+                if (!string.IsNullOrWhiteSpace(orderName))
                 {
                     var (isReady, tn) = await _inPostService.IsReadyForFulfillment(tracking);
                     if (isReady)
                     {
-                        // jw. potrzebna nazwa zamówienia – do zrobienia gdy będziesz mieć mapowanie
-                        _logger.LogInformation("Gotowe do realizacji (tracking={Tracking}).", tn);
-                        // await _shopifyService.MarkOrderAsFulfilled(orderName, tn);
+                        _logger.LogInformation("Marking order {OrderName} as FULFILLED (tracking={Tracking}).", orderName, tn);
+                        await _shopifyService.MarkOrderAsFulfilled(orderName, tn);
                     }
                 }
-
-                return Ok();
-            }
-
-            // 3) PRZYPADek B: Twój testowy „płaski” JSON z curl (zostawiam, bo jest wygodny do testów)
-            var flat = JsonSerializer.Deserialize<FlatTestPayload>(raw, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            if (flat is null) return BadRequest("Invalid payload (unknown shape)");
-
-            _logger.LogInformation("Flat payload: {Status} {ShipmentName} {Tracking}",
-                flat.Status, flat.ShipmentName, flat.TrackingNumber);
-
-            switch (flat.Status)
-            {
-                case "created":
-                    if (!string.IsNullOrWhiteSpace(flat.ShipmentName))
-                        await _shopifyService.MarkOrderAsOnHold(flat.ShipmentName!);
-                    break;
-
-                case "adopted_at_sorting_center":
-                    var (isReady, trackingNumber) = await _inPostService.IsReadyForFulfillment(flat.TrackingNumber);
-                    if (isReady && !string.IsNullOrWhiteSpace(flat.ShipmentName))
-                        await _shopifyService.MarkOrderAsFulfilled(flat.ShipmentName!, trackingNumber);
-                    break;
+                else
+                {
+                    _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
+                }
             }
 
             return Ok();
@@ -111,15 +89,7 @@ public class InPostWebhookController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to process InPost webhook");
-            // 200, żeby InPost nie spamował ponownie — logi są.
-            return Ok();
+            return Ok(); // 200 aby uniknąć ponownych wysyłek przez InPost
         }
     }
 }
-record FlatTestPayload(
-    string? Status,
-    [property: JsonPropertyName("shipment_name")] string? ShipmentName,
-    [property: JsonPropertyName("tracking_number")] string? TrackingNumber
-);
-
-

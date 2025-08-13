@@ -62,28 +62,27 @@ public class InPostService : IInPostService
     
     public async Task<string?> ResolveOrderNameAsync(long shipmentId)
     {
-        var resp = await _httpClient.GetAsync($"/v1/shipments/{shipmentId}");
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/v1/shipments/{shipmentId}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
 
-        if (resp.StatusCode == HttpStatusCode.Unauthorized || resp.StatusCode == HttpStatusCode.Forbidden)
+        var response = await _httpClient.SendAsync(request);
+        _logger.LogInformation("InPost GET /v1/shipments/{ShipmentId} -> {StatusCode}", shipmentId, (int)response.StatusCode);
+
+        if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning($"InPost GET /v1/shipments/{shipmentId} -> {(int)resp.StatusCode} (AUTH problem)");
+            _logger.LogWarning("Nie udało się pobrać shipmentu {ShipmentId}, kod={StatusCode}", shipmentId, (int)response.StatusCode);
             return null;
         }
 
-        if (!resp.IsSuccessStatusCode)
-        {
-            _logger.LogWarning($"InPost GET /v1/shipments/{shipmentId} -> {(int)resp.StatusCode}");
-            return null;
-        }
-
-        var json = await resp.Content.ReadAsStringAsync();
+        var json = await response.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
 
-        if (root.TryGetProperty("reference", out var refEl) && refEl.ValueKind == JsonValueKind.String)
-            return refEl.GetString();
+        if (doc.RootElement.TryGetProperty("reference", out var refProp))
+        {
+            var orderName = refProp.GetString();
+            return orderName;
+        }
 
-        _logger.LogInformation($"Shipment {shipmentId} nie ma pola 'reference'.");
         return null;
     }
 }
