@@ -20,6 +20,12 @@ public class InPostWebhookController : ControllerBase
         _logger = logger;
     }
 
+    [HttpGet("api/inpost-webhook")]
+    public IActionResult HealthCheck()
+    {
+        return Ok("ok");
+    }
+    
     [HttpPost]
     public async Task<IActionResult> ReceiveWebhook([FromBody] InPostWebhookPayload payload)
     {
