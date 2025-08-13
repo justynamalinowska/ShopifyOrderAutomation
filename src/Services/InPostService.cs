@@ -8,6 +8,7 @@ public class InPostService : IInPostService
     private readonly HttpClient _httpClient;
     private readonly string _token;
     private readonly ILogger<InPostService> _logger;
+    private readonly IConfiguration _config;
 
     // produkcyjny ShipX
     private const string BaseUrl = "https://api-shipx-pl.easypack24.net";
@@ -16,8 +17,11 @@ public class InPostService : IInPostService
     {
         _httpClient = httpClient;
         _logger = logger;
-
-        _token = config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
+        _config = config;
+        
+        _token = _config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
+        
+        _logger.LogInformation("[InPost] Token length={Length}", _token?.Length ?? 0);
 
         // ustawiamy bazowy adres i nagłówki
         _httpClient.BaseAddress = new Uri(BaseUrl);
