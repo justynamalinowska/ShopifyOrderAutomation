@@ -21,7 +21,7 @@ public class InPostService : IInPostService
         
         _token = _config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token");
         
-        _logger.LogInformation("[InPost] Token length={Length}", _token?.Length ?? 0);
+        _logger.LogInformation("[InPost] Token prefix: {Prefix}", _token.Substring(0, 20));
 
         // ustawiamy bazowy adres i nagłówki
         _httpClient.BaseAddress = new Uri(BaseUrl);
