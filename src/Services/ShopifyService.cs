@@ -1,236 +1,193 @@
-namespace ShopifyOrderAutomation.Services;
-
 using System.Net.Http.Headers;
 using System.Text.Json;
 
+namespace ShopifyOrderAutomation.Services;
+
 public class ShopifyService : IShopifyService
 {
-    private readonly HttpClient _httpClient;
-    private readonly IConfiguration _config;
-    private readonly string _shopName;
+    private readonly HttpClient _http;
+    private readonly ILogger<ShopifyService> _logger;
 
-    public ShopifyService(HttpClient httpClient, IConfiguration config)
+    public ShopifyService(HttpClient http, IConfiguration config, ILogger<ShopifyService> logger)
     {
-        _httpClient = httpClient;
-        _config = config;
-        _shopName = _config["Shopify:ShopName"];
+        _http = http;
+        _logger = logger;
+
+        var token = config["Shopify:Token"] ?? throw new ArgumentNullException("Shopify:Token");
+        var shop = config["Shopify:Shop"]   ?? throw new ArgumentNullException("Shopify:Shop");
+
+        _http.BaseAddress = new Uri($"https://{shop}/admin/api/2025-07/");
+        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
-    public async Task MarkOrderAsOnHold(string orderName)
+    // ========== PUBLIC API używane przez kontroler ==========
+
+    // 1) ON HOLD po nazwie zamówienia (z # albo bez #)
+    public async Task<bool> MarkOrderAsOnHold(string orderName)
     {
-        Console.WriteLine($"[OnHold] Szukam zamówienia: {orderName}");
-
         var orderId = await GetOrderIdByName(orderName);
-        if (orderId == null)
+        if (orderId is null)
         {
-            Console.WriteLine("[OnHold] Nie znaleziono zamówienia.");
-            return;
+            _logger.LogWarning("[OnHold] Nie znaleziono order po name={Name}", orderName);
+            return false;
         }
 
-        Console.WriteLine($"[OnHold] Znaleziono orderId: {orderId}");
-
-        var fulfillmentOrderId = await GetFulfillmentOrderId(orderId);
-        if (fulfillmentOrderId == null)
+        var foId = await GetFulfillmentOrderId(orderId.Value);
+        if (foId is null)
         {
-            Console.WriteLine("[OnHold] Nie znaleziono fulfillmentOrderId.");
-            return;
+            _logger.LogWarning("[OnHold] Brak FO dla orderId={OrderId}", orderId);
+            return false;
         }
 
-        Console.WriteLine($"[OnHold] Znaleziono fulfillmentOrderId: {fulfillmentOrderId}");
-        
-        var payload = new
-        {
-            fulfillment_hold = new  
-            {
-                reason = "other",
-                reason_notes = "Paczka czeka na zeskanowanie w punkcie"
-            }
-        };
-
-
-        var jsonString = JsonSerializer.Serialize(payload);
-        var content = new StringContent(jsonString);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var request = new HttpRequestMessage(HttpMethod.Post,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillment_orders/{fulfillmentOrderId}/hold.json")
-        {
-            Content = content
-        };
-
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        Console.WriteLine($"[OnHold] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
-        Console.WriteLine($"[OnHold] Body: {responseBody}");
+        return await PutFulfillmentOnHold(foId.Value); // ma pre-check supported_actions
     }
 
-    public async Task MarkOrderAsFulfilled(string orderName, string trackingNumber)
+    // 2) FULFILL po nazwie zamówienia (zwalnia hold jeśli trzeba, sprawdza fulfill)
+    public async Task<bool> MarkOrderAsFulfilled(string orderName, string trackingNumber)
     {
-        Console.WriteLine($"[Fulfill] Szukam zamówienia: {orderName}");
-
         var orderId = await GetOrderIdByName(orderName);
-        if (orderId == null)
+        if (orderId is null)
         {
-            Console.WriteLine("[Fulfill] Nie znaleziono zamówienia.");
+            _logger.LogWarning("[Fulfill] Nie znaleziono order po name={Name}", orderName);
+            return false;
+        }
+
+        var foId = await GetFulfillmentOrderId(orderId.Value);
+        if (foId is null)
+        {
+            _logger.LogWarning("[Fulfill] Brak FO dla orderId={OrderId}", orderId);
+            return false;
+        }
+
+        // 1) Najpierw spróbuj zwolnić HOLD (jeśli FO na to pozwala)
+        await ReleaseFoHoldIfNeededAsync(foId.Value);
+
+        // 2) Sprawdź, czy 'fulfill' jest dostępny
+        var supported = await GetSupportedActionsAsync(foId.Value);
+        if (!supported.Contains("fulfill"))
+        {
+            _logger.LogWarning("[Fulfill] Pomijam – brak akcji 'fulfill' (supported=[{A}])", string.Join(",", supported));
+            return false;
+        }
+
+        // 3) Realizacja przez /fulfillments.json (po FO id)
+        return await FulfillByFoAsync(foId.Value, trackingNumber);
+    }
+
+    // ========== Poniżej implementacje i helpery ==========
+
+    // HOLD z pre-checkiem supported_actions (unikamy 422)
+    private async Task<bool> PutFulfillmentOnHold(long fulfillmentOrderId)
+    {
+        var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
+        if (!supported.Contains("hold"))
+        {
+            _logger.LogWarning("[OnHold] FO={Id} nie wspiera akcji HOLD (supported=[{A}])",
+                fulfillmentOrderId, string.Join(",", supported));
+            return false;
+        }
+
+        var resp = await _http.PostAsync(
+            $"fulfillment_orders/{fulfillmentOrderId}/hold.json",
+            new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+
+        var body = await resp.Content.ReadAsStringAsync();
+        _logger.LogInformation("[OnHold] POST hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
+        return resp.IsSuccessStatusCode;
+    }
+
+    // Zwolnij hold jeśli FO ma akcję release_hold
+    public async Task ReleaseFoHoldIfNeededAsync(long fulfillmentOrderId)
+    {
+        var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
+        if (!supported.Contains("release_hold"))
+        {
+            _logger.LogInformation("[ReleaseHold] FO={Id} nie ma akcji release_hold (supported=[{A}])",
+                fulfillmentOrderId, string.Join(",", supported));
             return;
         }
 
-        Console.WriteLine($"[Fulfill] Znaleziono orderId: {orderId}");
+        _logger.LogInformation("[ReleaseHold] Zwalniam HOLD dla FO={Id}", fulfillmentOrderId);
+        var resp = await _http.PostAsync(
+            $"fulfillment_orders/{fulfillmentOrderId}/release_hold.json",
+            new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
 
-        var fulfillmentOrderId = await GetFulfillmentOrderId(orderId);
-        if (fulfillmentOrderId == null)
-        {
-            Console.WriteLine("[Fulfill] fulfillment_order_id == null");
-            return;
-        }
-        
-        Console.WriteLine($"[Fulfill] fulfillmentOrderId={fulfillmentOrderId}");
-        
-        await ReleaseFulfillmentHold(fulfillmentOrderId);
-        await Task.Delay(1000);
-        
+        var body = await resp.Content.ReadAsStringAsync();
+        _logger.LogInformation("[ReleaseHold] POST release_hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
+    }
+
+    // Właściwy call fulfillments.json po FO id
+    private async Task<bool> FulfillByFoAsync(long fulfillmentOrderId, string trackingNumber)
+    {
         var payload = new
         {
             fulfillment = new
             {
-                message = "Wysłano przez InPost",
+                tracking_number = trackingNumber,
                 notify_customer = true,
-                tracking_info = new
-                {
-                    number = trackingNumber,
-                    company = "InPost"
-                },
                 line_items_by_fulfillment_order = new[]
                 {
-                    new
-                    {
-                        fulfillment_order_id = long.Parse(fulfillmentOrderId)
-                    }
+                    new { fulfillment_order_id = fulfillmentOrderId }
                 }
             }
         };
 
-        var request = new HttpRequestMessage(HttpMethod.Post,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillments.json")
-        {
-            Content = JsonContent.Create(payload)
-        };
+        var json = JsonSerializer.Serialize(payload);
+        var resp = await _http.PostAsync("fulfillments.json",
+            new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
 
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-
-        Console.WriteLine($"[Fulfill] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
-        Console.WriteLine($"[Fulfill] Body: {responseBody}");
+        var body = await resp.Content.ReadAsStringAsync();
+        _logger.LogInformation("[Fulfill] fulfillments.json -> {Status} {Body}", (int)resp.StatusCode, body);
+        return resp.IsSuccessStatusCode;
     }
 
-    private async Task<string?> GetOrderIdByName(string orderName)
+    // orderId po nazwie (obsługa z #)
+    public async Task<long?> GetOrderIdByName(string orderName)
     {
-        var encodedOrderName = Uri.EscapeDataString(orderName);
+        var name = orderName.StartsWith("#", StringComparison.Ordinal) ? orderName : $"#{orderName}";
+        var resp = await _http.GetAsync($"orders.json?name={Uri.EscapeDataString(name)}&status=any");
+        if (!resp.IsSuccessStatusCode) return null;
 
-        Console.WriteLine($"[GetOrderId] Szukam orderName={encodedOrderName}");
+        var json = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var orders = doc.RootElement.GetProperty("orders");
+        if (orders.GetArrayLength() == 0) return null;
 
-        var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/orders.json?name={encodedOrderName}&status=any");
-
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            Console.WriteLine($"[GetOrderId] Błąd API: {(int)response.StatusCode} {response.ReasonPhrase}");
-            return null;
-        }
-
-        var content = await response.Content.ReadAsStringAsync();
-        using var json = JsonDocument.Parse(content);
-
-        var order = json.RootElement.GetProperty("orders").EnumerateArray().FirstOrDefault();
-        var found = order.TryGetProperty("id", out var id) ? id.ToString() : null;
-
-        Console.WriteLine($"[GetOrderId] orderId={found}");
-        return found;
+        return orders[0].GetProperty("id").GetInt64();
     }
 
-    private async Task<string?> GetFulfillmentOrderId(string orderId)
+    // pierwszy fulfillment_order_id dla orderId
+    public async Task<long?> GetFulfillmentOrderId(long orderId)
     {
-        Console.WriteLine($"[GetFulfillmentId] Szukam fulfillmentOrder dla orderId={orderId}");
+        var resp = await _http.GetAsync($"orders/{orderId}/fulfillment_orders.json");
+        if (!resp.IsSuccessStatusCode) return null;
 
-        var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/orders/{orderId}/fulfillment_orders.json");
+        var json = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var arr = doc.RootElement.GetProperty("fulfillment_orders");
+        if (arr.GetArrayLength() == 0) return null;
 
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode)
-        {
-            Console.WriteLine($"[GetFulfillmentId] Błąd API: {(int)response.StatusCode} {response.ReasonPhrase}");
-            return null;
-        }
-
-        var content = await response.Content.ReadAsStringAsync();
-        using var json = JsonDocument.Parse(content);
-
-        var ordersArray = json.RootElement.GetProperty("fulfillment_orders").EnumerateArray();
-
-        var fulfillmentOrder = ordersArray.FirstOrDefault();
-
-        if (fulfillmentOrder.ValueKind == JsonValueKind.Undefined || fulfillmentOrder.ValueKind == JsonValueKind.Null)
-        {
-            Console.WriteLine("[GetFulfillmentId] fulfillment_orders[] puste – brak realizacji.");
-            return null;
-        }
-
-        if (!fulfillmentOrder.TryGetProperty("id", out var id))
-        {
-            Console.WriteLine("[GetFulfillmentId] Brak pola 'id' w fulfillment_order.");
-            return null;
-        }
-
-        var found = id.ToString();
-        Console.WriteLine($"[GetFulfillmentId] fulfillmentOrderId={found}");
-        return found;
+        return arr[0].GetProperty("id").GetInt64();
     }
 
-    private async Task<JsonDocument?> GetOrderDetails(string orderId)
+    // wspólny helper: odczyt supported_actions dla FO
+    private async Task<HashSet<string>> GetSupportedActionsAsync(long fulfillmentOrderId)
     {
-        Console.WriteLine($"[GetOrderDetails] Pobieram szczegóły zamówienia {orderId}");
+        var resp = await _http.GetAsync($"fulfillment_orders/{fulfillmentOrderId}.json");
+        var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!resp.IsSuccessStatusCode) return supported;
 
-        var request = new HttpRequestMessage(HttpMethod.Get,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/orders/{orderId}.json?fields=id,line_items,location_id");
+        var json = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var fo = doc.RootElement.GetProperty("fulfillment_order");
 
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode)
+        if (fo.TryGetProperty("supported_actions", out var sa) && sa.ValueKind == JsonValueKind.Array)
         {
-            Console.WriteLine($"[GetOrderDetails] Błąd API: {(int)response.StatusCode} {response.ReasonPhrase}");
-            return null;
+            foreach (var a in sa.EnumerateArray())
+                if (a.ValueKind == JsonValueKind.String) supported.Add(a.GetString()!);
         }
 
-        var content = await response.Content.ReadAsStringAsync();
-        Console.WriteLine($"[GetOrderDetails] Sukces.");
-        return JsonDocument.Parse(content);
-    }
-    
-    public async Task ReleaseFulfillmentHold(string fulfillmentOrderId)
-    {
-        Console.WriteLine($"[ReleaseHold] Zdejmuję blokadę z fulfillment_order_id={fulfillmentOrderId}");
-
-        var request = new HttpRequestMessage(HttpMethod.Post,
-            $"https://{_shopName}.myshopify.com/admin/api/2025-07/fulfillment_orders/{fulfillmentOrderId}/release_hold.json");
-
-        AddAuthHeaders(request);
-        var response = await _httpClient.SendAsync(request);
-
-        var responseBody = await response.Content.ReadAsStringAsync();
-        Console.WriteLine($"[ReleaseHold] Odpowiedź: {(int)response.StatusCode} {response.ReasonPhrase}");
-        Console.WriteLine($"[ReleaseHold] Body: {responseBody}");
-    }
-
-    private void AddAuthHeaders(HttpRequestMessage request)
-    {
-        request.Headers.Add("X-Shopify-Access-Token", _config["Shopify:Token"]);
+        return supported;
     }
 }
