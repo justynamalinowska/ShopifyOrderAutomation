@@ -17,8 +17,6 @@ public class InPostService : IInPostService
 
         _token = (config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token")).Trim();
 
-        _logger.LogInformation("[InPost] Token prefix: {Prefix}", _token.Substring(0, 20));
-
         // Ustawiamy domyślne nagłówki tylko raz
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
         _httpClient.DefaultRequestHeaders.Accept.Clear();

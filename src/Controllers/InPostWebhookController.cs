@@ -29,7 +29,6 @@ public class InPostWebhookController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> ReceiveWebhook()
     {
-        // wczytanie raw body
         using var reader = new StreamReader(Request.Body);
         var raw = await reader.ReadToEndAsync();
         _logger.LogInformation("InPost webhook RAW: {Raw}", raw);
@@ -53,8 +52,8 @@ public class InPostWebhookController : ControllerBase
             var ev = evNode!.GetValue<string>();
             var payload = payloadNode!.AsObject();
 
-            var status = payload.TryGetPropertyValue("status", out var s) ? s!.GetValue<string>() : null;
-            var tracking = payload.TryGetPropertyValue("tracking_number", out var t) ? t!.GetValue<string>() : null;
+            var status     = payload.TryGetPropertyValue("status", out var s) ? s!.GetValue<string>() : null;
+            var tracking   = payload.TryGetPropertyValue("tracking_number", out var t) ? t!.GetValue<string>() : null;
             var shipmentId = payload.TryGetPropertyValue("shipment_id", out var sh) ? sh!.GetValue<long>() : 0;
 
             _logger.LogInformation("InPost EVENT={Event} STATUS={Status} TRACKING={Tracking} SHIPMENT_ID={ShipmentId}",
@@ -80,44 +79,48 @@ public class InPostWebhookController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Błąd podczas przetwarzania webhooka InPost.");
-            // zwracamy 200 aby InPost nie wysyłał ponownie
-            return Ok();
+            return Ok(); // 200 -> brak retry ze strony InPost
         }
     }
 
     private async Task HandleOnHoldAsync(long shipmentId)
     {
         var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
-        if (!string.IsNullOrWhiteSpace(orderName))
-        {
-            _logger.LogInformation("Oznaczam zamówienie {OrderName} jako ON HOLD.", orderName);
-            await _shopifyService.MarkOrderAsOnHold(orderName);
-        }
-        else
+        if (string.IsNullOrWhiteSpace(orderName))
         {
             _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
+            return;
         }
+
+        _logger.LogInformation("Oznaczam zamówienie {OrderName} jako ON HOLD.", orderName);
+        await _shopifyService.MarkOrderAsOnHold(orderName);
     }
 
-    private async Task HandleFulfillmentAsync(long shipmentId, string? tracking)
+    private async Task HandleFulfillmentAsync(long shipmentId, string? trackingFromWebhook)
     {
         var orderName = await _inPostService.ResolveOrderNameAsync(shipmentId);
-        if (!string.IsNullOrWhiteSpace(orderName))
+        if (string.IsNullOrWhiteSpace(orderName))
         {
-            var (isReady, tn) = await _inPostService.IsReadyForFulfillment(tracking);
-            if (isReady)
-            {
-                _logger.LogInformation("Oznaczam zamówienie {OrderName} jako FULFILLED (tracking={Tracking}).", orderName, tn);
-                await _shopifyService.MarkOrderAsFulfilled(orderName, tn);
-            }
-            else
-            {
-                _logger.LogInformation("Zamówienie {OrderName} nie jest jeszcze gotowe do realizacji.", orderName);
-            }
+            _logger.LogWarning("[Fulfill] Nie udało się ustalić orderName dla shipment_id={ShipmentId}", shipmentId);
+            return;
         }
-        else
+
+        // jeśli webhook nie przysłał trackingu – na razie pomijamy (możesz dorobić dociąganie z InPost /v1/shipments/{id})
+        if (string.IsNullOrWhiteSpace(trackingFromWebhook))
         {
-            _logger.LogWarning("Nie udało się ustalić numeru zamówienia dla shipment_id={ShipmentId}", shipmentId);
+            _logger.LogInformation("[Fulfill] Brak tracking_number w webhooku — pomijam fulfill na razie.");
+            return;
         }
+
+        // reguła gotowości (na razie w InPostService masz TEST=true; produkcyjnie: status == adopted_at_sorting_center)
+        var (isReady, tn) = await _inPostService.IsReadyForFulfillment(trackingFromWebhook);
+        if (!isReady)
+        {
+            _logger.LogInformation("Zamówienie {OrderName} nie jest jeszcze gotowe do realizacji.", orderName);
+            return;
+        }
+
+        _logger.LogInformation("Oznaczam zamówienie {OrderName} jako FULFILLED (tracking={Tracking}).", orderName, tn);
+        await _shopifyService.MarkOrderAsFulfilled(orderName, tn);
     }
 }
