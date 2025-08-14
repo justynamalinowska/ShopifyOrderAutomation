@@ -14,9 +14,10 @@ public class ShopifyService : IShopifyService
         _logger = logger;
 
         var token = config["Shopify:Token"] ?? throw new ArgumentNullException("Shopify:Token");
-        var shop = config["Shopify:Shop"]   ?? throw new ArgumentNullException("Shopify:Shop");
+        var shopName = config["Shopify:ShopName"] ?? throw new ArgumentNullException("Shopify:ShopName");
+        var shopDomain = $"{shopName}.myshopify.com";
 
-        _http.BaseAddress = new Uri($"https://{shop}/admin/api/2025-07/");
+        _http.BaseAddress = new Uri($"https://{shopDomain}/admin/api/2025-07/");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
