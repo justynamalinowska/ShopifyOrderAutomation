@@ -18,10 +18,16 @@ namespace ShopifyOrderAutomation.Services
             var shopHost = $"{shopName}.myshopify.com";
 
             _http.BaseAddress = new Uri($"https://{shopHost}/admin/api/2025-07/");
-            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            _logger.LogInformation("[ShopifyService] Base={Base}", _http.BaseAddress);
+            // 👇 KLUCZOWA ZMIANA: Shopify Admin API wymaga X-Shopify-Access-Token, nie Bearer
+            // Usuń ewentualny Authorization i dodaj właściwy nagłówek:
+            _http.DefaultRequestHeaders.Authorization = null;
+            if (_http.DefaultRequestHeaders.Contains("X-Shopify-Access-Token"))
+                _http.DefaultRequestHeaders.Remove("X-Shopify-Access-Token");
+            _http.DefaultRequestHeaders.Add("X-Shopify-Access-Token", token);
+
+            _logger.LogInformation("[ShopifyService] Base={Base} TokenLen={Len}", _http.BaseAddress, token.Length);
         }
 
         // ========== API używane przez kontroler ==========
@@ -76,13 +82,17 @@ namespace ShopifyOrderAutomation.Services
             return await MarkOrderAsFulfilled(foId.Value, trackingNumber);
         }
 
-        // ========== Publiczne helpery (mogą przydać się także gdzie indziej) ==========
+        // ========== Publiczne helpery ==========
 
         public async Task<long?> GetOrderIdByName(string orderName)
         {
             var name = orderName.StartsWith("#", StringComparison.Ordinal) ? orderName : $"#{orderName}";
             var resp = await _http.GetAsync($"orders.json?name={Uri.EscapeDataString(name)}&status=any");
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[GetOrderIdByName] HTTP {Status}", (int)resp.StatusCode);
+                return null;
+            }
 
             var json = await resp.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
@@ -95,7 +105,11 @@ namespace ShopifyOrderAutomation.Services
         public async Task<long?> GetFulfillmentOrderId(long orderId)
         {
             var resp = await _http.GetAsync($"orders/{orderId}/fulfillment_orders.json");
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[GetFulfillmentOrderId] HTTP {Status}", (int)resp.StatusCode);
+                return null;
+            }
 
             var json = await resp.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
