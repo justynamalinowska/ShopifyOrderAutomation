@@ -72,14 +72,12 @@ namespace ShopifyOrderAutomation.Services
 
             // 2) Sprawdź, czy można fulfill
             var supported = await GetSupportedActionsAsync(foId.Value);
-            if (!supported.Contains("fulfill"))
-            {
-                _logger.LogWarning("[Fulfill] Pomijam – brak akcji 'fulfill' (supported=[{A}])", string.Join(",", supported));
-                return false;
-            }
-
-            // 3) Zrealizuj
-            return await MarkOrderAsFulfilled(foId.Value, trackingNumber);
+            if (supported.Contains("create_fulfillment") || supported.Contains("fulfill"))
+                return await MarkOrderAsFulfilled(foId.Value, trackingNumber);
+            _logger.LogWarning("[Fulfill] Pomijam – brak akcji 'create_fulfillment/fulfill' (supported=[{A}])",
+                string.Join(",", supported));
+            return false;
+            
         }
 
         // ========== Publiczne helpery ==========
