@@ -19,8 +19,7 @@ namespace ShopifyOrderAutomation.Services
 
             _http.BaseAddress = new Uri($"https://{shopHost}/admin/api/2025-07/");
             _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            // KLUCZ: Admin API używa nagłówka X-Shopify-Access-Token
+            
             _http.DefaultRequestHeaders.Authorization = null;
             if (_http.DefaultRequestHeaders.Contains("X-Shopify-Access-Token"))
                 _http.DefaultRequestHeaders.Remove("X-Shopify-Access-Token");
@@ -28,8 +27,6 @@ namespace ShopifyOrderAutomation.Services
 
             _logger.LogInformation("[ShopifyService] Base={Base} TokenLen={Len}", _http.BaseAddress, token.Length);
         }
-
-        // ========= API wołane z kontrolera =========
 
         public async Task<bool> MarkOrderAsOnHold(string orderName)
         {
@@ -65,19 +62,16 @@ namespace ShopifyOrderAutomation.Services
                 _logger.LogWarning("[Fulfill] Brak FO dla orderId={OrderId}", orderId);
                 return false;
             }
-
-            // 1) zwolnij hold jeśli się da (próbujemy nawet gdy lista akcji pusta)
+            
             await ReleaseFoHoldIfNeededAsync(foId.Value);
-
-            // 2) sprawdź listę akcji
+            
             var supported = await GetSupportedActionsAsync(foId.Value);
 
             if (supported.Contains("create_fulfillment") || supported.Contains("fulfill"))
             {
                 return await MarkOrderAsFulfilled(foId.Value, trackingNumber);
             }
-
-            // 3) Fallback: jeśli Shopify nie zwrócił akcji (pusta lista) – spróbuj mimo to
+            
             if (supported.Count == 0)
             {
                 _logger.LogWarning("[Fulfill] supported_actions puste dla FO={Id} – próbuję mimo to (fallback).", foId);
@@ -91,8 +85,6 @@ namespace ShopifyOrderAutomation.Services
                 string.Join(",", supported));
             return false;
         }
-
-        // ========= Publiczne helpery (używane też przez kontroler) =========
 
         public async Task<long?> GetOrderIdByName(string orderName)
         {
@@ -134,8 +126,7 @@ namespace ShopifyOrderAutomation.Services
         public async Task ReleaseFoHoldIfNeededAsync(long fulfillmentOrderId)
         {
             var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
-
-            // próbujemy nawet gdy pusto
+            
             if (supported.Count == 0 || supported.Contains("release_hold"))
             {
                 _logger.LogInformation("[ReleaseHold] Próba zwolnienia HOLD dla FO={Id} (supported=[{A}])",
@@ -155,11 +146,8 @@ namespace ShopifyOrderAutomation.Services
             }
         }
 
-        // ========= Tworzenie/aktualizacja fulfillmentu =========
-
         public async Task<bool> MarkOrderAsFulfilled(long fulfillmentOrderId, string trackingNumber)
         {
-            // pobierz orderId → potrzebne do sprawdzenia istniejących fulfillmentów
             long orderId;
             {
                 var foResp = await _http.GetAsync($"fulfillment_orders/{fulfillmentOrderId}.json");
@@ -172,15 +160,13 @@ namespace ShopifyOrderAutomation.Services
                 using var doc = JsonDocument.Parse(foBody);
                 orderId = doc.RootElement.GetProperty("fulfillment_order").GetProperty("order_id").GetInt64();
             }
-
-            // 1) jeśli już istnieje fulfillment z TYM SAMYM trackingiem → kończymy (unikamy 2. maila)
+            
             if (await FulfillmentExistsWithTracking(orderId, trackingNumber))
             {
                 _logger.LogInformation("[Fulfill] Fulfillment z tracking={Tracking} już istnieje dla orderId={OrderId} – pomijam.", trackingNumber, orderId);
                 return true;
             }
 
-            // 2) jeśli istnieje JAKIKOLWIEK fulfillment → tylko zaktualizuj tracking (i dopiero tu notyfikuj)
             var (exists, existingFulfillmentId, existingTracking) = await GetFirstFulfillmentForOrder(orderId);
             if (exists && existingFulfillmentId.HasValue)
             {
@@ -188,8 +174,7 @@ namespace ShopifyOrderAutomation.Services
                     existingFulfillmentId, existingTracking ?? "(brak)");
                 return await UpdateFulfillmentTrackingAsync(existingFulfillmentId.Value, trackingNumber, notify: true);
             }
-
-            // 3) brak fulfillmentów → utwórz nowy (one-shot) z trackingiem i powiadomieniem
+            
             var payload = new
             {
                 fulfillment = new
@@ -210,7 +195,6 @@ namespace ShopifyOrderAutomation.Services
             {
                 Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
             };
-            // Idempotencja po trackingNumber (eliminuje duplikaty przy retrach)
             req.Headers.TryAddWithoutValidation("Idempotency-Key", $"fulfill-{trackingNumber}");
 
             var resp = await _http.SendAsync(req);
@@ -219,19 +203,15 @@ namespace ShopifyOrderAutomation.Services
             return resp.IsSuccessStatusCode;
         }
 
-        // ========= Prywatne helpery =========
-
         private async Task<bool> PutFulfillmentOnHold(long fulfillmentOrderId)
         {
             var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
-
-            // jeśli Shopify wyraźnie zezwala – spoko
+            
             if (supported.Contains("hold"))
             {
                 return await DoHoldPostAsync(fulfillmentOrderId);
             }
-
-            // jeśli lista akcji jest pusta – SPRÓBUJ mimo to (tak działało wcześniej)
+            
             if (supported.Count == 0)
             {
                 _logger.LogWarning("[OnHold] supported_actions puste dla FO={Id} – próbuję HOLD mimo to (fallback).", fulfillmentOrderId);
@@ -245,13 +225,12 @@ namespace ShopifyOrderAutomation.Services
 
         private async Task<bool> DoHoldPostAsync(long fulfillmentOrderId)
         {
-            // Zalecany payload (wcześniej bywało, że {} „przechodziło”, ale nie zawsze)
             var payload = new
             {
                 fulfillment_hold = new
                 {
                     reason = "other",
-                    reason_notes = "Auto hold via InPost (shipment_confirmed)"
+                    reason_notes = "Paczka czeka na zeskanowanie w magazynie InPost"
                 }
             };
 
@@ -278,8 +257,7 @@ namespace ShopifyOrderAutomation.Services
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-
-            // standard: { "fulfillment_order": { ..., "supported_actions": [ ... ] } }
+            
             if (root.TryGetProperty("fulfillment_order", out var fo)
                 && fo.TryGetProperty("supported_actions", out var sa)
                 && sa.ValueKind == JsonValueKind.Array)
@@ -290,8 +268,7 @@ namespace ShopifyOrderAutomation.Services
 
             return supported;
         }
-
-        // === DODANE: pre-check czy istnieje fulfillment z tym trackingiem (eliminuje duplikaty/mail #2) ===
+        
         private async Task<bool> FulfillmentExistsWithTracking(long orderId, string trackingNumber)
         {
             var resp = await _http.GetAsync($"orders/{orderId}/fulfillments.json");
@@ -312,8 +289,7 @@ namespace ShopifyOrderAutomation.Services
             }
             return false;
         }
-
-        // === DODANE: pobranie pierwszego istniejącego fulfillmentu dla orderu ===
+        
         private async Task<(bool exists, long? fulfillmentId, string? trackingNumber)> GetFirstFulfillmentForOrder(long orderId)
         {
             var resp = await _http.GetAsync($"orders/{orderId}/fulfillments.json");
@@ -331,8 +307,7 @@ namespace ShopifyOrderAutomation.Services
 
             return (true, fid, tn);
         }
-
-        // === DODANE: aktualizacja trackingu na istniejącym fulfillmencie ===
+        
         private async Task<bool> UpdateFulfillmentTrackingAsync(long fulfillmentId, string trackingNumber, bool notify)
         {
             var payload = new
@@ -341,7 +316,6 @@ namespace ShopifyOrderAutomation.Services
                 {
                     tracking_number = trackingNumber,
                     tracking_company = "InPost",
-                    // bez tracking_urls – Shopify sam zrobi link
                     notify_customer = notify
                 }
             };
@@ -351,7 +325,6 @@ namespace ShopifyOrderAutomation.Services
             {
                 Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
             };
-            // idempotencja na wypadek retry
             req.Headers.TryAddWithoutValidation("Idempotency-Key", $"update-tracking-{fulfillmentId}-{trackingNumber}");
 
             var resp = await _http.SendAsync(req);
