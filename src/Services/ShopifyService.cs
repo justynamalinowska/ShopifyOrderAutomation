@@ -29,6 +29,8 @@ namespace ShopifyOrderAutomation.Services
             _logger.LogInformation("[ShopifyService] Base={Base} TokenLen={Len}", _http.BaseAddress, token.Length);
         }
 
+        // ========= API wołane z kontrolera =========
+
         public async Task<bool> MarkOrderAsOnHold(string orderName)
         {
             var orderId = await GetOrderIdByName(orderName);
@@ -153,9 +155,11 @@ namespace ShopifyOrderAutomation.Services
             }
         }
 
+        // ========= Tworzenie/aktualizacja fulfillmentu =========
+
         public async Task<bool> MarkOrderAsFulfilled(long fulfillmentOrderId, string trackingNumber)
         {
-            // === DODANE: pobranie orderId z FO i pre-check duplikatu trackingu ===
+            // pobierz orderId → potrzebne do sprawdzenia istniejących fulfillmentów
             long orderId;
             {
                 var foResp = await _http.GetAsync($"fulfillment_orders/{fulfillmentOrderId}.json");
@@ -169,13 +173,23 @@ namespace ShopifyOrderAutomation.Services
                 orderId = doc.RootElement.GetProperty("fulfillment_order").GetProperty("order_id").GetInt64();
             }
 
+            // 1) jeśli już istnieje fulfillment z TYM SAMYM trackingiem → kończymy (unikamy 2. maila)
             if (await FulfillmentExistsWithTracking(orderId, trackingNumber))
             {
                 _logger.LogInformation("[Fulfill] Fulfillment z tracking={Tracking} już istnieje dla orderId={OrderId} – pomijam.", trackingNumber, orderId);
                 return true;
             }
 
-            // === ZMIENIONE: payload z linkiem do śledzenia i nazwą przewoźnika ===
+            // 2) jeśli istnieje JAKIKOLWIEK fulfillment → tylko zaktualizuj tracking (i dopiero tu notyfikuj)
+            var (exists, existingFulfillmentId, existingTracking) = await GetFirstFulfillmentForOrder(orderId);
+            if (exists && existingFulfillmentId.HasValue)
+            {
+                _logger.LogInformation("[Fulfill] Wykryto istniejący fulfillment={Fid} (tracking={Tn}). Aktualizuję tracking i wysyłam 1 mail.",
+                    existingFulfillmentId, existingTracking ?? "(brak)");
+                return await UpdateFulfillmentTrackingAsync(existingFulfillmentId.Value, trackingNumber, notify: true);
+            }
+
+            // 3) brak fulfillmentów → utwórz nowy (one-shot) z trackingiem i powiadomieniem
             var payload = new
             {
                 fulfillment = new
@@ -192,11 +206,11 @@ namespace ShopifyOrderAutomation.Services
 
             var json = JsonSerializer.Serialize(payload);
 
-            // === DODANE: Idempotency-Key oparty o tracking (eliminuje duplikaty przy retry) ===
             var req = new HttpRequestMessage(HttpMethod.Post, "fulfillments.json")
             {
                 Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
             };
+            // Idempotencja po trackingNumber (eliminuje duplikaty przy retrach)
             req.Headers.TryAddWithoutValidation("Idempotency-Key", $"fulfill-{trackingNumber}");
 
             var resp = await _http.SendAsync(req);
@@ -237,7 +251,7 @@ namespace ShopifyOrderAutomation.Services
                 fulfillment_hold = new
                 {
                     reason = "other",
-                    reason_notes = "Paczka czeka na zeskanowanie w magazynie Inpost"
+                    reason_notes = "Auto hold via InPost (shipment_confirmed)"
                 }
             };
 
@@ -297,6 +311,53 @@ namespace ShopifyOrderAutomation.Services
                 }
             }
             return false;
+        }
+
+        // === DODANE: pobranie pierwszego istniejącego fulfillmentu dla orderu ===
+        private async Task<(bool exists, long? fulfillmentId, string? trackingNumber)> GetFirstFulfillmentForOrder(long orderId)
+        {
+            var resp = await _http.GetAsync($"orders/{orderId}/fulfillments.json");
+            if (!resp.IsSuccessStatusCode) return (false, null, null);
+
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("fulfillments", out var arr) || arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0)
+                return (false, null, null);
+
+            var f = arr[0];
+            long fid = f.GetProperty("id").GetInt64();
+            string? tn = f.TryGetProperty("tracking_number", out var tnProp) ? tnProp.GetString() : null;
+
+            return (true, fid, tn);
+        }
+
+        // === DODANE: aktualizacja trackingu na istniejącym fulfillmencie ===
+        private async Task<bool> UpdateFulfillmentTrackingAsync(long fulfillmentId, string trackingNumber, bool notify)
+        {
+            var payload = new
+            {
+                fulfillment = new
+                {
+                    tracking_number = trackingNumber,
+                    tracking_company = "InPost",
+                    // bez tracking_urls – Shopify sam zrobi link
+                    notify_customer = notify
+                }
+            };
+
+            var json = JsonSerializer.Serialize(payload);
+            var req = new HttpRequestMessage(HttpMethod.Post, $"fulfillments/{fulfillmentId}/update_tracking.json")
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            };
+            // idempotencja na wypadek retry
+            req.Headers.TryAddWithoutValidation("Idempotency-Key", $"update-tracking-{fulfillmentId}-{trackingNumber}");
+
+            var resp = await _http.SendAsync(req);
+            var body = await resp.Content.ReadAsStringAsync();
+            _logger.LogInformation("[UpdateTracking] -> {Status} {Body}", (int)resp.StatusCode, body);
+            return resp.IsSuccessStatusCode;
         }
     }
 }
