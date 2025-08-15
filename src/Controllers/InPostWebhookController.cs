@@ -79,7 +79,7 @@ namespace ShopifyOrderAutomation.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Błąd podczas przetwarzania webhooka InPost.");
-                return Ok(); // 200 -> brak retry od InPost
+                return Ok(); 
             }
         }
 
@@ -110,8 +110,7 @@ namespace ShopifyOrderAutomation.Controllers
                 _logger.LogInformation("[Fulfill] Brak tracking_number w webhooku — pomijam fulfill na razie.");
                 return;
             }
-
-            // reguła gotowości (w InPostService możesz mieć TEST=true; produkcyjnie: adopted_at_sorting_center)
+            
             var (isReady, tn) = await _inPostService.IsReadyForFulfillment(trackingFromWebhook);
             if (!isReady)
             {
