@@ -171,13 +171,25 @@ namespace ShopifyOrderAutomation.Services
                     fulfillmentOrderId, string.Join(",", supported));
                 return false;
             }
+            
+            var payload = new
+            {
+                fulfillment_hold = new
+                {
+                    // najczęściej stosowane powody; wybierz sensowny dla Twojego procesu
+                    reason = "other", // np: "inventory_out_of_stock", "high_risk_of_fraud", "other"
+                    reason_notes = "Paczka czeka na zeskanowanie w magazynie InPost"
+                }
+            };
 
+            var json = System.Text.Json.JsonSerializer.Serialize(payload);
             var resp = await _http.PostAsync(
                 $"fulfillment_orders/{fulfillmentOrderId}/hold.json",
-                new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+                new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
 
             var body = await resp.Content.ReadAsStringAsync();
             _logger.LogInformation("[OnHold] POST hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
+
             return resp.IsSuccessStatusCode;
         }
 
