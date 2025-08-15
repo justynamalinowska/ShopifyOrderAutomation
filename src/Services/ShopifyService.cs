@@ -29,8 +29,6 @@ namespace ShopifyOrderAutomation.Services
             _logger.LogInformation("[ShopifyService] Base={Base} TokenLen={Len}", _http.BaseAddress, token.Length);
         }
 
-        // ========= API wołane z kontrolera =========
-
         public async Task<bool> MarkOrderAsOnHold(string orderName)
         {
             var orderId = await GetOrderIdByName(orderName);
@@ -157,11 +155,33 @@ namespace ShopifyOrderAutomation.Services
 
         public async Task<bool> MarkOrderAsFulfilled(long fulfillmentOrderId, string trackingNumber)
         {
+            // === DODANE: pobranie orderId z FO i pre-check duplikatu trackingu ===
+            long orderId;
+            {
+                var foResp = await _http.GetAsync($"fulfillment_orders/{fulfillmentOrderId}.json");
+                var foBody = await foResp.Content.ReadAsStringAsync();
+                if (!foResp.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("[Fulfill] Nie udało się pobrać FO={Id} (HTTP {Status})", fulfillmentOrderId, (int)foResp.StatusCode);
+                    return false;
+                }
+                using var doc = JsonDocument.Parse(foBody);
+                orderId = doc.RootElement.GetProperty("fulfillment_order").GetProperty("order_id").GetInt64();
+            }
+
+            if (await FulfillmentExistsWithTracking(orderId, trackingNumber))
+            {
+                _logger.LogInformation("[Fulfill] Fulfillment z tracking={Tracking} już istnieje dla orderId={OrderId} – pomijam.", trackingNumber, orderId);
+                return true;
+            }
+
+            // === ZMIENIONE: payload z linkiem do śledzenia i nazwą przewoźnika ===
             var payload = new
             {
                 fulfillment = new
                 {
                     tracking_number = trackingNumber,
+                    tracking_company = "InPost",
                     notify_customer = true,
                     line_items_by_fulfillment_order = new[]
                     {
@@ -171,9 +191,15 @@ namespace ShopifyOrderAutomation.Services
             };
 
             var json = JsonSerializer.Serialize(payload);
-            var resp = await _http.PostAsync("fulfillments.json",
-                new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
 
+            // === DODANE: Idempotency-Key oparty o tracking (eliminuje duplikaty przy retry) ===
+            var req = new HttpRequestMessage(HttpMethod.Post, "fulfillments.json")
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            };
+            req.Headers.TryAddWithoutValidation("Idempotency-Key", $"fulfill-{trackingNumber}");
+
+            var resp = await _http.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
             _logger.LogInformation("[Fulfill] fulfillments.json -> {Status} {Body}", (int)resp.StatusCode, body);
             return resp.IsSuccessStatusCode;
@@ -211,7 +237,7 @@ namespace ShopifyOrderAutomation.Services
                 fulfillment_hold = new
                 {
                     reason = "other",
-                    reason_notes = "Auto hold via InPost (shipment_confirmed)"
+                    reason_notes = "Paczka czeka na zeskanowanie w magazynie Inpost"
                 }
             };
 
@@ -249,6 +275,28 @@ namespace ShopifyOrderAutomation.Services
             }
 
             return supported;
+        }
+
+        // === DODANE: pre-check czy istnieje fulfillment z tym trackingiem (eliminuje duplikaty/mail #2) ===
+        private async Task<bool> FulfillmentExistsWithTracking(long orderId, string trackingNumber)
+        {
+            var resp = await _http.GetAsync($"orders/{orderId}/fulfillments.json");
+            if (!resp.IsSuccessStatusCode) return false;
+
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("fulfillments", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var f in arr.EnumerateArray())
+            {
+                if (f.TryGetProperty("tracking_number", out var tn) &&
+                    string.Equals(tn.GetString(), trackingNumber, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }
