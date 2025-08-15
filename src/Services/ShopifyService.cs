@@ -20,8 +20,7 @@ namespace ShopifyOrderAutomation.Services
             _http.BaseAddress = new Uri($"https://{shopHost}/admin/api/2025-07/");
             _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            // 👇 KLUCZOWA ZMIANA: Shopify Admin API wymaga X-Shopify-Access-Token, nie Bearer
-            // Usuń ewentualny Authorization i dodaj właściwy nagłówek:
+            // KLUCZ: Admin API używa nagłówka X-Shopify-Access-Token
             _http.DefaultRequestHeaders.Authorization = null;
             if (_http.DefaultRequestHeaders.Contains("X-Shopify-Access-Token"))
                 _http.DefaultRequestHeaders.Remove("X-Shopify-Access-Token");
@@ -30,7 +29,7 @@ namespace ShopifyOrderAutomation.Services
             _logger.LogInformation("[ShopifyService] Base={Base} TokenLen={Len}", _http.BaseAddress, token.Length);
         }
 
-        // ========== API używane przez kontroler ==========
+        // ========= API wołane z kontrolera =========
 
         public async Task<bool> MarkOrderAsOnHold(string orderName)
         {
@@ -48,7 +47,7 @@ namespace ShopifyOrderAutomation.Services
                 return false;
             }
 
-            return await PutFulfillmentOnHold(foId.Value); // ma pre-check supported_actions (brak 422)
+            return await PutFulfillmentOnHold(foId.Value);
         }
 
         public async Task<bool> MarkOrderAsFulfilled(string orderName, string trackingNumber)
@@ -67,25 +66,39 @@ namespace ShopifyOrderAutomation.Services
                 return false;
             }
 
-            // 1) Zwolnij hold, jeśli można
+            // 1) zwolnij hold jeśli się da (próbujemy nawet gdy lista akcji pusta)
             await ReleaseFoHoldIfNeededAsync(foId.Value);
 
-            // 2) Sprawdź, czy można fulfill
+            // 2) sprawdź listę akcji
             var supported = await GetSupportedActionsAsync(foId.Value);
+
             if (supported.Contains("create_fulfillment") || supported.Contains("fulfill"))
+            {
                 return await MarkOrderAsFulfilled(foId.Value, trackingNumber);
-            _logger.LogWarning("[Fulfill] Pomijam – brak akcji 'create_fulfillment/fulfill' (supported=[{A}])",
+            }
+
+            // 3) Fallback: jeśli Shopify nie zwrócił akcji (pusta lista) – spróbuj mimo to
+            if (supported.Count == 0)
+            {
+                _logger.LogWarning("[Fulfill] supported_actions puste dla FO={Id} – próbuję mimo to (fallback).", foId);
+                var ok = await MarkOrderAsFulfilled(foId.Value, trackingNumber);
+                if (!ok)
+                    _logger.LogWarning("[Fulfill] Fallback nie powiódł się dla FO={Id}", foId);
+                return ok;
+            }
+
+            _logger.LogWarning("[Fulfill] Pomijam – brak akcji create_fulfillment/fulfill (supported=[{A}])",
                 string.Join(",", supported));
             return false;
-            
         }
 
-        // ========== Publiczne helpery ==========
+        // ========= Publiczne helpery (używane też przez kontroler) =========
 
         public async Task<long?> GetOrderIdByName(string orderName)
         {
             var name = orderName.StartsWith("#", StringComparison.Ordinal) ? orderName : $"#{orderName}";
             var resp = await _http.GetAsync($"orders.json?name={Uri.EscapeDataString(name)}&status=any");
+
             if (!resp.IsSuccessStatusCode)
             {
                 _logger.LogWarning("[GetOrderIdByName] HTTP {Status}", (int)resp.StatusCode);
@@ -103,14 +116,15 @@ namespace ShopifyOrderAutomation.Services
         public async Task<long?> GetFulfillmentOrderId(long orderId)
         {
             var resp = await _http.GetAsync($"orders/{orderId}/fulfillment_orders.json");
+            var body = await resp.Content.ReadAsStringAsync();
+
             if (!resp.IsSuccessStatusCode)
             {
-                _logger.LogWarning("[GetFulfillmentOrderId] HTTP {Status}", (int)resp.StatusCode);
+                _logger.LogWarning("[GetFulfillmentOrderId] HTTP {Status} Body={Body}", (int)resp.StatusCode, body);
                 return null;
             }
 
-            var json = await resp.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(body);
             var arr = doc.RootElement.GetProperty("fulfillment_orders");
             if (arr.GetArrayLength() == 0) return null;
 
@@ -120,20 +134,25 @@ namespace ShopifyOrderAutomation.Services
         public async Task ReleaseFoHoldIfNeededAsync(long fulfillmentOrderId)
         {
             var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
-            if (!supported.Contains("release_hold"))
+
+            // próbujemy nawet gdy pusto
+            if (supported.Count == 0 || supported.Contains("release_hold"))
             {
-                _logger.LogInformation("[ReleaseHold] FO={Id} nie ma akcji release_hold (supported=[{A}])",
+                _logger.LogInformation("[ReleaseHold] Próba zwolnienia HOLD dla FO={Id} (supported=[{A}])",
                     fulfillmentOrderId, string.Join(",", supported));
-                return;
+
+                var resp = await _http.PostAsync(
+                    $"fulfillment_orders/{fulfillmentOrderId}/release_hold.json",
+                    new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+
+                var body = await resp.Content.ReadAsStringAsync();
+                _logger.LogInformation("[ReleaseHold] POST release_hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
             }
-
-            _logger.LogInformation("[ReleaseHold] Zwalniam HOLD dla FO={Id}", fulfillmentOrderId);
-            var resp = await _http.PostAsync(
-                $"fulfillment_orders/{fulfillmentOrderId}/release_hold.json",
-                new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
-
-            var body = await resp.Content.ReadAsStringAsync();
-            _logger.LogInformation("[ReleaseHold] POST release_hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
+            else
+            {
+                _logger.LogInformation("[ReleaseHold] FO={Id} nie raportuje release_hold (supported=[{A}]) – pomijam",
+                    fulfillmentOrderId, string.Join(",", supported));
+            }
         }
 
         public async Task<bool> MarkOrderAsFulfilled(long fulfillmentOrderId, string trackingNumber)
@@ -160,50 +179,70 @@ namespace ShopifyOrderAutomation.Services
             return resp.IsSuccessStatusCode;
         }
 
-        // ========== Prywatne helpery ==========
+        // ========= Prywatne helpery =========
 
         private async Task<bool> PutFulfillmentOnHold(long fulfillmentOrderId)
         {
             var supported = await GetSupportedActionsAsync(fulfillmentOrderId);
-            if (!supported.Contains("hold"))
+
+            // jeśli Shopify wyraźnie zezwala – spoko
+            if (supported.Contains("hold"))
             {
-                _logger.LogWarning("[OnHold] FO={Id} nie wspiera akcji HOLD (supported=[{A}])",
-                    fulfillmentOrderId, string.Join(",", supported));
-                return false;
+                return await DoHoldPostAsync(fulfillmentOrderId);
             }
-            
+
+            // jeśli lista akcji jest pusta – SPRÓBUJ mimo to (tak działało wcześniej)
+            if (supported.Count == 0)
+            {
+                _logger.LogWarning("[OnHold] supported_actions puste dla FO={Id} – próbuję HOLD mimo to (fallback).", fulfillmentOrderId);
+                return await DoHoldPostAsync(fulfillmentOrderId);
+            }
+
+            _logger.LogWarning("[OnHold] FO={Id} nie wspiera akcji HOLD (supported=[{A}])",
+                fulfillmentOrderId, string.Join(",", supported));
+            return false;
+        }
+
+        private async Task<bool> DoHoldPostAsync(long fulfillmentOrderId)
+        {
+            // Zalecany payload (wcześniej bywało, że {} „przechodziło”, ale nie zawsze)
             var payload = new
             {
                 fulfillment_hold = new
                 {
-                    // najczęściej stosowane powody; wybierz sensowny dla Twojego procesu
-                    reason = "other", // np: "inventory_out_of_stock", "high_risk_of_fraud", "other"
-                    reason_notes = "Paczka czeka na zeskanowanie w magazynie InPost"
+                    reason = "other",
+                    reason_notes = "Auto hold via InPost (shipment_confirmed)"
                 }
             };
 
-            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+            var json = JsonSerializer.Serialize(payload);
             var resp = await _http.PostAsync(
                 $"fulfillment_orders/{fulfillmentOrderId}/hold.json",
                 new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
 
             var body = await resp.Content.ReadAsStringAsync();
             _logger.LogInformation("[OnHold] POST hold.json -> {Status} {Body}", (int)resp.StatusCode, body);
-
             return resp.IsSuccessStatusCode;
         }
 
         private async Task<HashSet<string>> GetSupportedActionsAsync(long fulfillmentOrderId)
         {
             var resp = await _http.GetAsync($"fulfillment_orders/{fulfillmentOrderId}.json");
+            var json = await resp.Content.ReadAsStringAsync();
+
+            _logger.LogInformation("[FO] GET fulfillment_orders/{Id}.json -> {Status} Body={Body}",
+                fulfillmentOrderId, (int)resp.StatusCode, json);
+
             var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (!resp.IsSuccessStatusCode) return supported;
 
-            var json = await resp.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
-            var fo = doc.RootElement.GetProperty("fulfillment_order");
+            var root = doc.RootElement;
 
-            if (fo.TryGetProperty("supported_actions", out var sa) && sa.ValueKind == JsonValueKind.Array)
+            // standard: { "fulfillment_order": { ..., "supported_actions": [ ... ] } }
+            if (root.TryGetProperty("fulfillment_order", out var fo)
+                && fo.TryGetProperty("supported_actions", out var sa)
+                && sa.ValueKind == JsonValueKind.Array)
             {
                 foreach (var a in sa.EnumerateArray())
                     if (a.ValueKind == JsonValueKind.String) supported.Add(a.GetString()!);
