@@ -16,10 +16,7 @@ public class InPostService : IInPostService
         _logger = logger;
 
         _token = (config["InPost:Token"] ?? throw new ArgumentNullException("InPost:Token")).Trim();
-
-        _logger.LogInformation("[InPost] Token prefix: {Prefix}", _token.Substring(0, 20));
-
-        // Ustawiamy domyślne nagłówki tylko raz
+        
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
         _httpClient.DefaultRequestHeaders.Accept.Clear();
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -50,15 +47,15 @@ public class InPostService : IInPostService
         string status = statusProp.GetString();
         string shipmentName = trackingProp.GetString();
 
-        bool isReady = true; // TEST
-        // bool isReady = status == "adopted_at_sorting_center"; // produkcja
+        //bool isReady = true; // TEST
+        bool isReady = status == "adopted_at_sorting_center"; // PROD
         return (isReady, shipmentName);
     }
 
     public async Task<string?> ResolveOrderNameAsync(long shipmentId)
     {
         var url = $"{BaseUrl}/shipments/{shipmentId}";
-        _logger.LogInformation("[InPost] Pobieranie szczegółów shipment_id={ShipmentId}", shipmentId);
+        _logger.LogInformation("[InPost] Pobieranie szczegółów dla shipment_id={ShipmentId}", shipmentId);
 
         var response = await _httpClient.GetAsync(url);
         var body = await response.Content.ReadAsStringAsync();
