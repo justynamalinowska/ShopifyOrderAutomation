@@ -48,7 +48,7 @@ public class InPostService : IInPostService
         string shipmentName = trackingProp.GetString();
 
         //bool isReady = true; // TEST
-        bool isReady = status == "adopted_at_sorting_center"; // PROD
+        bool isReady = status == "adopted_at_sorting_center" || status == "adopted_at_source_branch";
         return (isReady, shipmentName);
     }
 
