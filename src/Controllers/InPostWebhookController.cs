@@ -69,6 +69,10 @@ namespace ShopifyOrderAutomation.Controllers
                         await HandleFulfillmentAsync(shipmentId, tracking);
                         break;
 
+                     case "adopted_at_sorting_center" when status == "adopted_at_source_branch":
+                        await HandleFulfillmentAsync(shipmentId, tracking);
+                        break;
+
                     default:
                         _logger.LogInformation("Event {Event} nie wymaga akcji.", ev);
                         break;
