@@ -65,7 +65,11 @@ namespace ShopifyOrderAutomation.Controllers
                         await HandleOnHoldAsync(shipmentId);
                         break;
 
-                    case "shipment_status_changed" when status == "adopted_at_sorting_center":
+                    case "shipment_status_changed" when 
+                        status == "adopted_at_source_branch" ||
+                        status == "adopted_at_sorting_center" ||
+                        status == "collected_from_sender" ||
+                        status == "taken_by_courier":
                         await HandleFulfillmentAsync(shipmentId, tracking);
                         break;
 
